@@ -1,0 +1,17 @@
+{
+  "name": "fz152-scanner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Экспресс-проверка сайтов на признаки нарушений 152-ФЗ: отчёты для клиентов и черновики писем",
+  "main": "scan.js",
+  "scripts": {
+    "scan": "node scan.js",
+    "test": "node test/run.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright": "^1.50.0"
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "brand": "Название вашего сервиса",
+  "contactName": "Ваше имя",
+  "email": "hello@example.ru",
+  "phone": "+7 900 000-00-00",
+  "website": "https://example.ru",
+  "turnaround": "48 часов",
+  "prices": {
+    "package": "7 900 ₽",
+    "turnkey": "14 900 ₽",
+    "monitoring": "1 490 ₽ в месяц"
+  }
+}
