@@ -1,0 +1,36 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Честный магазин курсов</title>
+<style>
+  body { background: #fff; color: #111; }
+  .cookie { position: fixed; bottom: 0; left: 0; right: 0; background: #0C141C; color: #fff; padding: 10px; }
+  .cookie button { background: #00B4FF; color: #0C141C; }
+</style>
+<script>document.cookie = "_ym_uid=1; path=/";</script>
+</head><body>
+<h1>Курсы рисования</h1>
+<p>Курс «Рисунок с нуля» стоит 4 990 ₽. Первая неделя за 1 ₽, дальше подписка продлевается автоматически: 990 ₽ в месяц, отменить подписку можно в личном кабинете.</p>
+<p>Скидка действует до конца года: <span class="countdown" id="c"></span></p>
+<script>
+  var end = Date.UTC(2027, 0, 1);
+  function tick() {
+    var left = Math.max(0, Math.floor((end - Date.now()) / 1000));
+    var p = function (n) { return String(n).padStart(2, '0'); };
+    document.getElementById('c').textContent = Math.floor(left / 86400) + ' д ' + p(Math.floor(left % 86400 / 3600)) + ':' + p(Math.floor(left % 3600 / 60)) + ':' + p(left % 60);
+  }
+  tick(); setInterval(tick, 1000);
+</script>
+<form>
+  <input name="name" placeholder="Имя"><input type="tel" name="phone" placeholder="Телефон">
+  <label><input type="checkbox" required> Даю <a href="consent.html">согласие на обработку персональных данных</a></label>
+  <label><input type="checkbox"> Хочу получать новости и предложения</label>
+  <p>Отписаться можно по ссылке в любом письме.</p>
+  <button>Оплатить</button>
+</form>
+<img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'/%3E" alt="Работа ученика" width="100" height="100">
+<div class="review">Отличный курс, спасибо преподавателям за терпение и подробные разборы домашних работ каждую неделю.</div>
+<div class="cookie">Мы используем cookie для аналитики. <button>Понятно</button></div>
+<footer>
+  <a href="policy.html">Политика обработки персональных данных</a> ·
+  <a href="consent.html">Согласие на обработку персональных данных</a> ·
+  <a href="oferta.html">Публичная оферта</a> · <a href="refund.html">Возврат денег</a> · ООО «Пример», ИНН 7700000016
+</footer>
+</body></html>

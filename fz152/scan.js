@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 'use strict';
 
-// Экспресс-проверка сайтов на признаки нарушений 152-ФЗ.
-// Запуск: node scan.js sites.txt            — список сайтов из файла (по одному в строке)
-//         node scan.js example.ru site.ru   — сайты прямо в командной строке
+// Экспресс-проверка сайтов по 20 пунктам: персональные данные, cookie, оферта и возврат,
+// реклама и отзывы, удобство для всех, лицензии.
+// Запуск: node scan.js sites.txt            - список сайтов из файла (по одному в строке)
+//         node scan.js example.ru site.ru   - сайты прямо в командной строке
 
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
-const { extractPageData } = require('./lib/extract');
-const { analyze, docCandidates, stripWww, safeUrl, POLICY_RE, CONSENT_DOC_RE } = require('./lib/analyze');
+const { extractPageData, readTimers } = require('./lib/extract');
+const { analyze, docCandidates, linkKind, stripWww, safeUrl } = require('./lib/analyze');
 const { renderReport, renderLetter, renderIndex, renderCsv, plural } = require('./lib/report');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const PAGE_TIMEOUT = 30000;
-const SITE_TIMEOUT = 150000;
+const SITE_TIMEOUT = 180000;
 
 // Какие внутренние страницы смотреть в первую очередь: там обычно формы заявок.
 const PRIORITY = [
@@ -26,9 +27,10 @@ const PRIORITY = [
 
 function help() {
   console.log(`
-Проверка сайтов на признаки нарушений 152-ФЗ.
+Проверка сайтов по 20 пунктам: персональные данные, cookie, оферта и возврат,
+реклама и отзывы, удобство для всех, лицензии.
 
-Использование:
+Как запустить:
   node scan.js <файл со списком сайтов | адреса сайтов...> [параметры]
 
 Параметры:
@@ -96,7 +98,7 @@ function loadConfig(p) {
   for (const c of candidates) {
     if (!fs.existsSync(c)) continue;
     if (path.basename(c) === 'config.example.json') {
-      console.warn('Внимание: используется config.example.json. Скопируйте его в config.json и впишите свои данные — они попадут в отчёты и письма.');
+      console.warn('Внимание: сейчас используется config.example.json. Скопируйте его в config.json и впишите свои данные, они попадут в отчёты и письма.');
     }
     return JSON.parse(fs.readFileSync(c, 'utf8'));
   }
@@ -135,14 +137,14 @@ async function visit(page, url) {
   } catch (e) {
     return { url: page.url(), status, error: 'не удалось прочитать страницу: ' + shortErr(e) };
   }
-  // Формы во встроенных окнах (виджеты записи, GetCourse и т.п.).
+  // Формы во встроенных окнах (виджеты записи, GetCourse и т. п.).
   for (const fr of page.frames().slice(0, 12)) {
     if (fr === page.mainFrame()) continue;
     if (/youtube|vimeo|google\.com\/maps|yandex\.\w+\/map-widget|vk\.com\/video/i.test(fr.url())) continue;
     try {
       const sub = await fr.evaluate(extractPageData);
       for (const f of sub.forms) { f.frameUrl = fr.url(); data.forms.push(f); }
-    } catch (e) { /* фрейм недоступен — пропускаем */ }
+    } catch (e) { /* фрейм недоступен, пропускаем */ }
   }
   return { url: page.url(), status, data };
 }
@@ -164,9 +166,9 @@ function pickPages(home, startUrl, n) {
     if (/\.(pdf|jpe?g|png|gif|webp|svg|zip|rar|7z|docx?|xlsx?|pptx?|mp4|mp3|avi|mov)$/i.test(u.pathname)) continue;
     const key = u.origin + u.pathname;
     if (seen.has(key)) continue;
-    const s = l.text + ' ' + decodeSafe(u.pathname);
-    if (POLICY_RE.test(s) || CONSENT_DOC_RE.test(s)) continue;
+    if (linkKind(l, host)) continue; // документы проверяются отдельно
     seen.add(key);
+    const s = l.text + ' ' + decodeSafe(u.pathname);
     let score = 0;
     PRIORITY.forEach((re, i) => { if (re.test(s)) score = Math.max(score, PRIORITY.length - i); });
     cands.push({ url: key, score, order: cands.length });
@@ -175,24 +177,46 @@ function pickPages(home, startUrl, n) {
   return cands.slice(0, n).map((c) => c.url);
 }
 
+// ---------- Документы ----------
+
 const POLICY_TEXT_RE = /(политик[\s\S]{0,60}персональн|обработк[\s\S]{0,30}персональн|конфиденциальн)/i;
 const stripTags = (s) => s.replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ').trim();
+// Признак «это действительно нужный документ», отдельно для каждого типа.
+const LOOKS_LIKE = {
+  policy: /персональн/i,
+  consent: /персональн/i,
+  cookie: /(cookie|куки)/i,
+  offer: /(оферт|договор)/i,
+  refund: /возврат/i,
+};
+// Что ищем внутри документов.
+const MENTIONS = {
+  analytics: /(метрик|вебвизор|webvisor|metrica|аналитик)/i,
+  cookie: /(cookie|куки)/i,
+  crossBorder: /трансграничн/i,
+  deletion: /(отзыв\S*\s+(\S+\s+){0,2}согласи|отозвать\s+(\S+\s+){0,2}согласи|(удалени|уничтожени)\S*\s+(\S+\s+){0,2}(персональн|данн|сведени)|прекращени\S*\s+(\S+\s+){0,2}обработк|прав\S*\s+на\s+удаление)/i,
+  parent: /(законн\S*\s+представител|родител|опекун)/i,
+  unsubscribe: /(отписа|отказаться\s+от\s+(получения|рассыл)|отзыв\S*\s+согласи\S*\s+на\s+(получение|рассыл)|unsubscribe)/i,
+  refund: /возврат/i,
+  autorenew: /(автопродл|автоматическ\S*\s+(продл|списан)|рекуррент|отключить\s+(подписку|автопл|автопрод)|отменить\s+подписку)/i,
+};
+const unknownMentions = () => Object.fromEntries(Object.keys(MENTIONS).map((k) => [k, null]));
 
-// Скачиваем документ (политику или согласие) и проверяем, что он открывается и похож на настоящий.
+// Скачиваем документ и проверяем, что он открывается и похож на настоящий.
 // Если это раздел со списком документов («Правовая информация»), переходим по ссылке на саму политику.
-async function checkDoc(context, href, depth = 0) {
+async function checkDoc(context, href, kind, depth = 0) {
   try {
     const r = await context.request.get(href, { timeout: 15000, maxRedirects: 5, failOnStatusCode: false });
     const status = r.status();
     if (status >= 400) return { ok: false, status };
     const ct = (r.headers()['content-type'] || '').toLowerCase();
-    // PDF и Word не читаем: документ есть, но что в нём написано — неизвестно (mentions = null).
+    // PDF и Word не читаем: документ есть, но что в нём написано, неизвестно.
     if (/pdf|msword|officedocument/.test(ct) || /\.(pdf|docx?)$/i.test(new URL(r.url()).pathname)) {
-      return { ok: true, status, reqText: [], mentions: { analytics: null, crossBorder: null } };
+      return { ok: true, status, reqText: [], mentions: unknownMentions() };
     }
     const html = decodeBody(await r.body(), ct);
-    const result = readDocHtml(html, status);
-    if (depth === 0) {
+    const result = readDocHtml(html, status, kind);
+    if (depth === 0 && kind === 'policy') {
       const link = [...html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
         .map((m) => ({ href: m[1], text: stripTags(m[2]) }))
         .find((l) => POLICY_TEXT_RE.test(l.text) && !/согласи/i.test(l.text) && !/^(#|mailto:|tel:|javascript:)/i.test(l.href));
@@ -200,15 +224,16 @@ async function checkDoc(context, href, depth = 0) {
         let abs = null;
         try { abs = new URL(link.href, r.url()).href.split('#')[0]; } catch (e) { /* битая ссылка */ }
         if (abs && abs !== r.url().split('#')[0]) {
-          const sub = await checkDoc(context, abs, 1);
+          const sub = await checkDoc(context, abs, kind, 1);
           if (sub.ok) {
             result.ok = true;
             result.reqText.push(...(sub.reqText || []));
-            // true — где-то прямо сказано; false — в полноценном тексте политики не сказано; null — неизвестно.
+            // Эта страница - список документов, а сама политика лежит по ссылке. Поэтому «в тексте этого нет»
+            // решаем только по самой политике: если она в PDF, честно считаем содержание неизвестным.
             for (const k of Object.keys(result.mentions)) {
               const a = result.mentions[k];
               const b = sub.mentions[k];
-              result.mentions[k] = a === true || b === true ? true : a === false || b === false ? false : null;
+              result.mentions[k] = a === true || b === true ? true : b === false ? false : null;
             }
           }
         }
@@ -220,7 +245,8 @@ async function checkDoc(context, href, depth = 0) {
   }
 }
 
-// Старые сайты (часто на 1С-Битрикс) отдают страницы в windows-1251 — без этого «персональных» превратится в кракозябры.
+// Старые сайты (часто на 1С-Битрикс) отдают страницы в windows-1251. Без перекодировки
+// слово «персональных» превратится в кракозябры.
 function decodeBody(buf, contentType) {
   let charset = (/charset=([\w-]+)/i.exec(contentType || '') || [])[1];
   if (!charset) {
@@ -233,7 +259,7 @@ function decodeBody(buf, contentType) {
 }
 
 // Текст документа: открывается ли он, какие в нём реквизиты и что в нём сказано.
-function readDocHtml(html, status) {
+function readDocHtml(html, status, kind = 'policy') {
   const text = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
@@ -242,18 +268,102 @@ function readDocHtml(html, status) {
     .replace(/\s+/g, ' ');
   const reqText = [...text.matchAll(/(ИНН(?:\s*\/\s*КПП)?|ОГРН(?:ИП)?)\s*[:№]?\s*(\d{10,15})/gi)]
     .slice(0, 20).map((m) => m[1] + ' ' + m[2]);
-  // Короткий текст без ключевых слов — скорее всего, страница рисуется скриптом; не считаем её битой.
-  const ok = /персональн/i.test(text) || text.length < 1500;
+  const re = LOOKS_LIKE[kind] || LOOKS_LIKE.policy;
+  // Короткий текст без ключевых слов - скорее всего, страница рисуется скриптом: не считаем её битой.
+  const ok = re.test(text) || text.length < 1500;
   // Прямое упоминание засчитываем всегда (true). Вывод «не упоминается» (false) делаем только
-  // по полноценному тексту политики, иначе — «неизвестно» (null).
-  const looksLikePolicy = /персональн/i.test(text) && text.length >= 1500;
-  const said = (re) => (re.test(text) ? true : looksLikePolicy ? false : null);
-  const mentions = {
-    analytics: said(/(метрик|вебвизор|webvisor|metrica|аналитик|cookie|куки)/i),
-    crossBorder: said(/трансграничн/i),
-  };
+  // по полноценному тексту документа, иначе - «неизвестно» (null).
+  const full = re.test(text) && text.length >= 1500;
+  const mentions = Object.fromEntries(Object.entries(MENTIONS).map(([k, r]) => [k, r.test(text) ? true : full ? false : null]));
   return { ok, status, reqText, mentions };
 }
+
+// ---------- Таймер и клавиатура ----------
+
+// Таймер на главной: тикает ли он по секундам. Неподвижные таймеры (только дни или часы) не проверяем.
+async function readTimerTick(page) {
+  try {
+    const a = await page.evaluate(readTimers);
+    if (!a.length) return null;
+    await page.waitForTimeout(2100);
+    const b = await page.evaluate(readTimers);
+    if (!b.length) return null;
+    return { text: b[0], at: Date.now(), ticking: a[0] !== b[0] };
+  } catch (e) {
+    return null;
+  }
+}
+
+function timerSeconds(text) {
+  const nums = (String(text).match(/\d+/g) || []).map(Number);
+  if (nums.length < 2 || nums.some((n) => n > 999)) return null;
+  const [s = 0, m = 0, hh = 0, d = 0] = nums.slice(-4).reverse();
+  return d * 86400 + hh * 3600 + m * 60 + s;
+}
+
+// Повторный заход «новым посетителем»: настоящий таймер к этому времени уменьшится на прошедшие секунды,
+// а фальшивый начнёт отсчёт заново и покажет почти то же самое, что в первый раз.
+async function timerRecheck(browser, url, first) {
+  // Между заходами должно пройти хотя бы 6 секунд, иначе настоящий и фальшивый таймеры не различить.
+  const wait = 6500 - (Date.now() - first.at);
+  if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+  const ctx = await browser.newContext({ locale: 'ru-RU', userAgent: UA, viewport: { width: 1366, height: 900 }, ignoreHTTPSErrors: true });
+  try {
+    const page = await ctx.newPage();
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: PAGE_TIMEOUT });
+    await page.waitForLoadState('networkidle', { timeout: 7000 }).catch(() => {});
+    await page.waitForTimeout(1200);
+    const texts = await page.evaluate(readTimers);
+    if (!texts.length) return null;
+    const second = { text: texts[0], at: Date.now() };
+    const v1 = timerSeconds(first.text);
+    const v2 = timerSeconds(second.text);
+    const delta = Math.round((second.at - first.at) / 1000);
+    if (!v1 || !v2 || delta < 6) return null;
+    return { first: first.text, second: second.text, delta, evergreen: Math.abs(v2 - v1) < delta / 2 };
+  } catch (e) {
+    return null;
+  } finally {
+    await ctx.close().catch(() => {});
+  }
+}
+
+// Пройдём по главной клавишей Tab: двигается ли фокус и видно ли, где он.
+async function keyboardCheck(page) {
+  try {
+    await page.evaluate(() => {
+      window.scrollTo(0, 0);
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    });
+    const seen = [];
+    for (let i = 0; i < 15; i++) {
+      await page.keyboard.press('Tab');
+      const info = await page.evaluate(() => {
+        const el = document.activeElement;
+        if (!el || el === document.body || el === document.documentElement) return null;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        const visible = r.width > 1 && r.height > 1 && cs.visibility !== 'hidden' && Number(cs.opacity) > 0;
+        const outline = (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0) || (cs.boxShadow && cs.boxShadow !== 'none');
+        return { key: el.tagName + '|' + (el.getAttribute('href') || '') + '|' + (el.innerText || '').trim().slice(0, 30), visible, outline };
+      });
+      if (info) seen.push(info);
+    }
+    const visible = seen.filter((x) => x.visible);
+    return {
+      focused: seen.length,
+      distinct: new Set(seen.map((x) => x.key)).size,
+      visibleFocused: visible.length,
+      noOutline: visible.filter((x) => !x.outline).length,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+// ---------- Проверка одного сайта ----------
+
+const DOC_LIMITS = { policy: 3, consent: 2, cookie: 1, offer: 2, refund: 1 };
 
 async function scanSite(browser, startUrl, opts = {}) {
   const maxPages = opts.pages != null ? opts.pages : 3;
@@ -268,6 +378,8 @@ async function scanSite(browser, startUrl, opts = {}) {
   context.on('request', (req) => { if (requests.size < 8000) requests.add(req.url()); });
   const page = await context.newPage();
   const pages = [];
+  let keyboard = null;
+  let timerFirst = null;
   try {
     let home = await visit(page, startUrl);
     if (home.error && /^https:/i.test(startUrl)) {
@@ -276,19 +388,22 @@ async function scanSite(browser, startUrl, opts = {}) {
     }
     pages.push(home);
     if (!home.error) {
+      timerFirst = await readTimerTick(page);
+      keyboard = await keyboardCheck(page);
       for (const u of pickPages(home, startUrl, maxPages)) pages.push(await visit(page, u));
     }
     const cookies = (await context.cookies()).map((c) => ({ name: c.name, domain: c.domain }));
     const docs = {};
     if (!home.error) {
       const cands = docCandidates(pages.filter((p) => p.data));
-      const toCheck = [
-        ...cands.policy.filter((c) => !c.popup).slice(0, 3),
-        ...cands.consent.filter((c) => !c.popup).slice(0, 2),
-      ];
-      for (const c of toCheck) if (!docs[c.key]) docs[c.key] = await checkDoc(context, c.href);
+      for (const [kind, limit] of Object.entries(DOC_LIMITS)) {
+        for (const c of cands[kind].filter((x) => !x.popup).slice(0, limit)) {
+          if (!docs[c.key]) docs[c.key] = await checkDoc(context, c.href, kind);
+        }
+      }
     }
-    return analyze({ input: startUrl, startUrl, scannedAt, pages, cookies, requests: [...requests], docs });
+    const timer = timerFirst && timerFirst.ticking ? await timerRecheck(browser, home.url, timerFirst) : null;
+    return analyze({ input: startUrl, startUrl, scannedAt, pages, cookies, requests: [...requests], docs, keyboard, timer });
   } finally {
     await context.close().catch(() => {});
   }
@@ -325,7 +440,7 @@ async function main() {
       results[i] = r;
       done++;
       const n = r.findings.length;
-      console.log(`[${done}/${sites.length}] ${r.site} — ` + (r.ok
+      console.log(`[${done}/${sites.length}] ${r.site}: ` + (r.ok
         ? `${n} ${plural(n, ['замечание', 'замечания', 'замечаний'])} (серьёзных: ${r.counts.high}), баллы: ${r.score}`
         : `ошибка: ${r.error}`));
     }
@@ -353,10 +468,10 @@ async function main() {
   const ok = results.filter((r) => r.ok);
   console.log(`\nГотово. Проверено: ${ok.length} из ${results.length}. С серьёзными нарушениями: ${ok.filter((r) => r.counts.high).length}.`);
   console.log(`Результаты: ${outDir}`);
-  console.log('  index.html — сводная таблица, leads.csv — для Excel, reports/ — отчёты для клиентов, letters/ — черновики писем');
+  console.log('  index.html - сводная таблица, leads.csv - для Excel, reports/ - отчёты для клиентов, letters/ - черновики писем');
 }
 
-module.exports = { scanSite, normalizeUrl, readSites, pickPages };
+module.exports = { scanSite, normalizeUrl, readSites, pickPages, timerSeconds };
 
 if (require.main === module) {
   main().catch((e) => { console.error(e); process.exit(1); });

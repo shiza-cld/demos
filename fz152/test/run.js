@@ -1,6 +1,6 @@
 'use strict';
 
-// Проверка сканера на тестовых страницах: node test/run.js
+// Проверка сканера на тестовых страницах: node test/run.js (или npm test)
 // Поднимает локальный сервер с test/fixtures и сверяет найденные замечания с ожидаемыми.
 
 const http = require('http');
@@ -11,6 +11,10 @@ const { scanSite } = require('../scan');
 const { innValid, ogrnValid } = require('../lib/inn');
 
 const ROOT = path.join(__dirname, 'fixtures');
+// Для проверки платных шрифтов тестовый сервер отдаёт системный шрифт под именем Gilroy.
+// Если такого файла на машине нет, эту часть проверки пропускаем.
+const FONT = ['/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 'C:/Windows/Fonts/arial.ttf', '/System/Library/Fonts/Supplemental/Arial.ttf']
+  .find((f) => fs.existsSync(f));
 
 const CASES = {
   good: { has: ['no_https'], not: ['no_policy', 'policy_broken', 'no_consent', 'consent_passive', 'consent_prechecked', 'no_consent_doc', 'no_requisites', 'foreign_forms', 'foreign_services', 'webvisor'] },
@@ -19,24 +23,41 @@ const CASES = {
   prechecked: { has: ['consent_prechecked', 'no_consent_doc'], not: ['no_consent', 'no_policy', 'policy_broken'] },
   broken: { has: ['policy_broken'], not: ['no_policy', 'no_consent', 'no_consent_doc'] },
   orphan: { has: ['no_consent', 'no_policy'], not: [] },
-  // Галочка ПДн не отмечена, а галочка рекламы отмечена заранее — это нарушение закона «О рекламе», а не 152-ФЗ.
+  // Галочка ПДн не отмечена, а галочка рекламы отмечена заранее - это нарушение закона «О рекламе», а не 152-ФЗ.
   adbox: { has: ['ad_prechecked'], not: ['consent_prechecked', 'no_consent', 'no_consent_doc', 'no_policy'] },
-  // Политика доступна через «Правовая информация»; ссылки на yandex.ru/legal — не политика сайта;
-  // Метрика описана в документах — Вебвизор не ругаем.
+  // Политика доступна через «Правовая информация»; ссылки на yandex.ru/legal - не политика сайта;
+  // Метрика описана в документах - Вебвизор не ругаем.
   legalhub: { has: [], not: ['no_policy', 'policy_broken', 'no_consent', 'no_consent_doc', 'webvisor'] },
-  // Поле поиска в карте — не форма заявки.
+  // Поле поиска в карте - не форма заявки.
   map: { has: [], not: ['no_consent', 'no_policy', 'no_consent_doc'] },
-  // GetCourse: видимые галочки не отмечены, отмеченные — скрытые служебные копии; согласие склеено с офертой.
+  // GetCourse: видимые галочки не отмечены, отмеченные - скрытые служебные копии; согласие склеено с офертой.
   getcourse: { has: ['consent_combined'], not: ['consent_prechecked', 'ad_prechecked', 'no_consent'] },
-  // Политика — PDF за разделом «Документы»: текст неизвестен, поэтому Вебвизор только «незначительно».
-  pdfhub: { has: ['webvisor'], not: ['no_policy', 'policy_broken', 'no_consent_doc'], severity: { webvisor: 'low' } },
-  // Политика в кодировке windows-1251 — не «битая».
+  // Политика - PDF за разделом «Документы»: текст неизвестен, поэтому Вебвизор только «незначительно».
+  pdfhub: { has: ['webvisor'], not: ['no_policy', 'policy_broken', 'no_consent_doc', 'no_deletion_info'], severity: { webvisor: 'low' } },
+  // Политика в кодировке windows-1251 - не «битая».
   cp1251: { has: [], not: ['policy_broken', 'no_policy'] },
+  // Магазин со всеми нарушениями сразу: фальшивый таймер, давление, обещания, платная галочка, нет оферты и возврата.
+  shop: {
+    has: ['no_offer', 'no_refund', 'hidden_paid_option', 'autorenew_unclear', 'dark_timer', 'dark_patterns', 'empty_promises',
+      'reviews_duplicates', 'img_no_alt', 'low_contrast', 'keyboard_nav', 'stock_hotlink', 'cookies_no_notice']
+      .concat(FONT ? ['paid_fonts'] : []),
+    not: ['no_consent', 'consent_prechecked', 'ad_prechecked'],
+  },
+  // Детская школа: нет согласия родителей, просят паспорт, нет отписки, фото со стока по имени файла.
+  kids: { has: ['children_consent', 'excess_data', 'no_unsubscribe', 'stock_names'], not: ['no_consent', 'no_policy'] },
+  // Честный магазин: оферта, возврат, автопродление, баннер cookie, настоящий таймер. Ничего лишнего.
+  shopgood: {
+    has: [],
+    not: ['no_offer', 'no_refund', 'autorenew_unclear', 'dark_timer', 'dark_patterns', 'empty_promises', 'cookies_no_notice',
+      'no_cookie_policy', 'no_deletion_info', 'no_unsubscribe', 'img_no_alt', 'low_contrast', 'keyboard_nav', 'webvisor',
+      'hidden_paid_option', 'ad_prechecked', 'no_consent_doc', 'consent_passive', 'reviews_duplicates'],
+  },
 };
 
 function serve() {
   const server = http.createServer((req, res) => {
     let p = decodeURIComponent(req.url.split('?')[0]);
+    if (p === '/font.ttf' && FONT) { res.writeHead(200, { 'content-type': 'font/ttf' }); res.end(fs.readFileSync(FONT)); return; }
     if (p.endsWith('/')) p += 'index.html';
     const file = path.join(ROOT, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));
     if (!file.startsWith(ROOT) || !fs.existsSync(file)) { res.writeHead(404); res.end('not found'); return; }
