@@ -23,6 +23,10 @@ const STATUS = {
   manual: { icon: '?', label: 'проверьте сами' },
 };
 
+// Оговорка внизу каждого отчёта.
+const DISCLAIMER = 'Проверка сделана автоматически по тому, что видно на страницах сайта. Это не юридическое заключение: '
+  + 'внутренние документы, защиту данных и уведомление в Роскомнадзор по сайту не увидеть, их нужно проверять отдельно.';
+
 function fmtDate(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -178,8 +182,7 @@ ${info}
 <p class="contacts">${[cfg.contactName, cfg.brand, cfg.phone, cfg.email, cfg.website].filter(Boolean).map(esc).join(' · ')}</p>
 </section>
 
-<footer>Проверка сделана автоматически по тому, что видно на страницах сайта. Это не юридическое заключение:
-внутренние документы, защиту данных и уведомление в Роскомнадзор по сайту не увидеть, их нужно проверять отдельно.</footer>
+<footer>${esc(DISCLAIMER)}</footer>
 </main></body></html>`;
 }
 
@@ -233,6 +236,13 @@ function renderIndex(results, cfg, files) {
   }).join('');
   const okCount = results.filter((r) => r.ok).length;
   const hot = results.filter((r) => r.ok && r.counts.high).length;
+  // Что встречается чаще всего: помогает понять, о чём писать в первую очередь.
+  const freq = new Map();
+  for (const r of results) for (const f of (r.ok ? r.findings : [])) freq.set(f.title, (freq.get(f.title) || 0) + 1);
+  const top = [...freq].sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const topBlock = okCount && top.length ? `<h2>Что встречается чаще всего</h2>
+<section><div class="chips" style="margin:0">${top.map(([title, n]) =>
+    `<span class="chip">${esc(title)}: <b>${n}</b> из ${okCount} (${Math.round(n / okCount * 100)}%)</span>`).join('')}</div></section>` : '';
   return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex,nofollow"><title>Результаты проверки сайтов</title>
 <style>${CSS}
@@ -243,7 +253,8 @@ function renderIndex(results, cfg, files) {
 <div class="brand">${esc(cfg.brand)}</div>
 <h1>Результаты проверки сайтов</h1>
 <p class="meta">Проверено сайтов: ${okCount} из ${results.length} · С серьёзными нарушениями: ${hot} · Сверху сайты с наибольшим числом замечаний (серьёзное = 3 балла, важное = 2, можно позже = 1)</p>
-<br>
+${topBlock}
+<h2>Сайты</h2>
 <table class="t"><thead><tr><th>Сайт</th><th>Баллы</th><th>Серьёзных / важных / можно позже</th><th>Главное</th><th>E-mail для связи</th><th>Файлы</th></tr></thead>
 <tbody>${rows}</tbody></table>
 </main></body></html>`;
@@ -270,4 +281,4 @@ function renderCsv(results, files) {
   return '﻿' + lines.join('\r\n') + '\r\n';
 }
 
-module.exports = { renderReport, renderLetter, renderIndex, renderCsv, plural, CSS };
+module.exports = { renderReport, renderLetter, renderIndex, renderCsv, plural, summaryText, CSS, DISCLAIMER, SEV_LABEL };

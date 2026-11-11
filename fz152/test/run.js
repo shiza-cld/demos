@@ -7,7 +7,8 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
-const { scanSite } = require('../scan');
+const os = require('os');
+const { scanSite, writeOutputs, loadPrevious } = require('../scan');
 const { innValid, ogrnValid } = require('../lib/inn');
 
 const ROOT = path.join(__dirname, 'fixtures');
@@ -45,10 +46,12 @@ const CASES = {
   },
   // Детская школа: нет согласия родителей, просят паспорт, нет отписки, фото со стока по имени файла.
   kids: { has: ['children_consent', 'excess_data', 'no_unsubscribe', 'stock_names'], not: ['no_consent', 'no_policy'] },
-  // Честный магазин: оферта, возврат, автопродление, баннер cookie, настоящий таймер. Ничего лишнего.
+  // Форма в виджете (встроенном окне) без галочки, а слова о согласии стоят рядом на странице: это «согласие фразой», а не «без согласия».
+  frames: { has: ['consent_passive'], not: ['no_consent', 'no_policy'] },
+  // Честный магазин: оферта, возврат, автопродление, баннер cookie, настоящий таймер, форма входа без галочки. Ничего лишнего.
   shopgood: {
     has: [],
-    not: ['no_offer', 'no_refund', 'autorenew_unclear', 'dark_timer', 'dark_patterns', 'empty_promises', 'cookies_no_notice',
+    not: ['no_consent', 'no_offer', 'no_refund', 'autorenew_unclear', 'dark_timer', 'dark_patterns', 'empty_promises', 'cookies_no_notice',
       'no_cookie_policy', 'no_deletion_info', 'no_unsubscribe', 'img_no_alt', 'low_contrast', 'keyboard_nav', 'webvisor',
       'hidden_paid_option', 'ad_prechecked', 'no_consent_doc', 'consent_passive', 'reviews_duplicates'],
   },
@@ -98,6 +101,40 @@ function serve() {
     }
     if (failed === before) console.log('  ✓');
   }
+  // Адрес, который ведёт на страницу входа (так бывает у школ на GetCourse): отчёт по нему не строим.
+  console.log('страница входа:');
+  {
+    const before = failed;
+    const r = await scanSite(browser, `${base}/login/cms/system/login/`, { pages: 0 });
+    check(!r.ok && /страница входа/.test(r.error || ''), `страница входа должна давать понятную ошибку, а получилось: ok=${r.ok}, ${r.error}`);
+    if (failed === before) console.log('  ✓');
+  }
+
+  // Сохранение по ходу работы, продолжение после сбоя и пересборка отчётов с другими настройками.
+  console.log('сохранение и пересборка:');
+  {
+    const before = failed;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fz152-test-'));
+    const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config.example.json'), 'utf8'));
+    const a = await scanSite(browser, `${base}/bad/`, { pages: 0 });
+    const b = await scanSite(browser, `${base}/good/`, { pages: 0 });
+    // Имитация сбоя: в папке только незавершённый файл, причём последняя строка оборвана.
+    fs.writeFileSync(path.join(dir, 'partial.jsonl'), JSON.stringify(a) + '\n' + JSON.stringify(b) + '\n{"input":"http://обрыв');
+    const prev = loadPrevious(dir);
+    check(prev.size === 2, `после сбоя должно восстановиться 2 сайта, восстановилось ${prev.size}`);
+    writeOutputs([...prev.values()], cfg, dir);
+    for (const f of ['index.html', 'leads.csv', 'results.json']) check(fs.existsSync(path.join(dir, f)), `нет файла ${f}`);
+    check(!fs.existsSync(path.join(dir, 'partial.jsonl')), 'незавершённый файл не удалён после сборки');
+    check(fs.readdirSync(path.join(dir, 'reports')).length === 2, 'должно быть 2 отчёта');
+    check(fs.readFileSync(path.join(dir, 'index.html'), 'utf8').includes('Что встречается чаще всего'), 'в сводке нет блока с частыми проблемами');
+    // Пересборка с новым названием сервиса: проверять сайты заново не нужно.
+    writeOutputs([...loadPrevious(dir).values()], { ...cfg, brand: 'Тест-бренд' }, dir);
+    const report = fs.readFileSync(path.join(dir, 'reports', fs.readdirSync(path.join(dir, 'reports'))[0]), 'utf8');
+    check(report.includes('Тест-бренд'), 'после пересборки в отчёте нет нового названия сервиса');
+    fs.rmSync(dir, { recursive: true, force: true });
+    if (failed === before) console.log('  ✓');
+  }
+
   await browser.close();
   server.close();
   console.log(failed ? `\nПровалено проверок: ${failed}` : '\nВсе проверки пройдены.');

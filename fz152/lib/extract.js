@@ -131,6 +131,8 @@ function extractPageData() {
     return {
       isOrphan,
       visible: isVisible(root),
+      // Поле пароля отличает форму входа от формы заявки.
+      hasPassword: !!root.querySelector('input[type="password"]'),
       action: root.getAttribute ? (root.getAttribute('action') || '') : '',
       fields: [...new Set(pd.map(fieldKind))],
       pdCount: pd.length,
@@ -206,7 +208,10 @@ function extractPageData() {
   // Полный текст (включая скрытые попапы Tilda) нужен для реквизитов и e-mail,
   // видимый - для поиска обещаний, приёмов давления, цен и т. п.
   const fullText = document.body ? textOf(document.body, 300000) : '';
-  const visibleText = document.body ? norm(document.body.innerText).slice(0, 40000) : '';
+  // Переносы строк сохраняем: по ним видно, где кончается заголовок или кнопка.
+  const visibleText = document.body
+    ? document.body.innerText.replace(/[ \t\u00a0]+/g, ' ').replace(/\s*\n\s*/g, '\n').trim().slice(0, 40000)
+    : '';
 
   const reqText = [];
   for (const m of fullText.matchAll(/(ИНН(?:\s*\/\s*КПП)?|ОГРН(?:ИП)?)\s*[:№]?\s*(\d{10,15})/gi)) {
@@ -236,7 +241,7 @@ function extractPageData() {
     total: imgs.length,
     noAlt: noAlt.length,
     emptyAlt: emptyAlt.length,
-    examples: noAlt.concat(emptyAlt).slice(0, 4).map(imgName).filter(Boolean),
+    examples: [...new Set(noAlt.concat(emptyAlt).map(imgName).filter(Boolean))].slice(0, 12),
   };
 
   // ---------- Контраст текста ----------
@@ -311,6 +316,11 @@ function extractPageData() {
     examples: clickableNoFocus.map((el) => cut(el.innerText, 40)).filter(Boolean).slice(0, 3),
   };
 
+  // ---------- Тексты кнопок и коротких ссылок (для поиска кнопок отказа вроде «Нет, я не хочу учиться») ----------
+  const buttons = [...new Set([...document.querySelectorAll('a, button, [role="button"], input[type="submit"], input[type="button"]')]
+    .map((el) => norm(el.innerText || el.value || ''))
+    .filter((t) => t.length >= 8 && t.length <= 70))].slice(0, 300);
+
   // ---------- Веб-шрифты, которые реально загрузились ----------
   const webFonts = new Set();
   try {
@@ -334,6 +344,10 @@ function extractPageData() {
     reviewTexts.set(t, (reviewTexts.get(t) || 0) + 1);
   }
   const duplicateReviews = [...reviewTexts.values()].filter((n) => n > 1).length;
+
+  // Страница входа в личный кабинет: проверять на ней нечего, нужен адрес самого сайта.
+  const loginPage = /(\/cms\/system\/login|\/login\/?$|\/signin\/?$|\/sign-in\/?$|\/auth\/?$|\/user\/login|\/account\/login|\/wp-login)/i.test(location.pathname) &&
+    !!document.querySelector('input[type="password"]');
 
   const generator = (document.querySelector('meta[name="generator"]') || {}).content || '';
   const isTilda = !!document.getElementById('allrecords') || /tilda/i.test(generator) ||
@@ -359,9 +373,11 @@ function extractPageData() {
     images,
     contrast,
     keyboard,
+    buttons,
     webFonts: [...webFonts].slice(0, 30),
     hasReviews,
     duplicateReviews,
+    loginPage,
   };
 }
 

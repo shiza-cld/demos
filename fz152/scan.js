@@ -38,21 +38,28 @@ function help() {
   --concurrency <N>     сколько сайтов проверять одновременно (по умолчанию: 3)
   --pages <N>           сколько внутренних страниц смотреть на каждом сайте (по умолчанию: 3)
   --config <файл>       файл с вашими данными для отчётов (по умолчанию: config.json)
+  --resume <папка>      продолжить прерванную проверку: готовые сайты пропускаются, ошибки пробуются ещё раз
+  --render <папка>      заново собрать отчёты и письма из готовых результатов, без повторной проверки
+                        (например, после того как вы поменяли config.json)
 
 Примеры:
   node scan.js sites.txt
   node scan.js example.ru school.ru --pages 5
+  node scan.js sites.txt --resume output/2026-11-11_10-00
+  node scan.js --render output/2026-11-11_10-00
 `);
 }
 
 function parseArgs(argv) {
-  const opts = { inputs: [], out: 'output', concurrency: 3, pages: 3, config: null };
+  const opts = { inputs: [], out: 'output', concurrency: 3, pages: 3, config: null, resume: null, render: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--out') opts.out = argv[++i];
     else if (a === '--concurrency' || a === '-c') opts.concurrency = Math.max(1, parseInt(argv[++i], 10) || 3);
     else if (a === '--pages') { const n = parseInt(argv[++i], 10); opts.pages = Number.isFinite(n) && n >= 0 ? n : 3; }
     else if (a === '--config') opts.config = argv[++i];
+    else if (a === '--resume') opts.resume = argv[++i];
+    else if (a === '--render') opts.render = argv[++i];
     else if (a === '-h' || a === '--help') { help(); process.exit(0); }
     else opts.inputs.push(a);
   }
@@ -127,6 +134,8 @@ async function visit(page, url) {
   const status = resp ? resp.status() : null;
   if (status && status >= 400) return { url: page.url(), status, error: `сайт ответил ошибкой ${status}` };
   await page.waitForLoadState('networkidle', { timeout: 7000 }).catch(() => {});
+  // Сайт мог перенаправить на адрес, который не открывается: тогда в браузере страница ошибки.
+  if (/^(chrome-error|about):/.test(page.url())) return { url, error: 'сайт не открылся' };
   // Прокрутка вниз: некоторые блоки и счётчики подгружаются только при скролле.
   await page.evaluate(() => window.scrollTo(0, document.body ? document.body.scrollHeight : 0)).catch(() => {});
   await page.waitForTimeout(1200);
@@ -143,10 +152,42 @@ async function visit(page, url) {
     if (/youtube|vimeo|google\.com\/maps|yandex\.\w+\/map-widget|vk\.com\/video/i.test(fr.url())) continue;
     try {
       const sub = await fr.evaluate(extractPageData);
-      for (const f of sub.forms) { f.frameUrl = fr.url(); data.forms.push(f); }
+      if (!sub.forms.some((f) => f.pdCount)) continue;
+      // Слова о согласии могут стоять не в самом виджете, а рядом с ним на странице: читаем блок вокруг окна.
+      const around = await frameSurroundings(fr);
+      for (const f of sub.forms) {
+        f.frameUrl = fr.url();
+        f.blockText = (f.blockText + ' ' + around).slice(0, 7000);
+        data.forms.push(f);
+      }
     } catch (e) { /* фрейм недоступен, пропускаем */ }
   }
   return { url: page.url(), status, data };
+}
+
+// Текст блока, в который вставлено встроенное окно (виджет формы), без стилей и скриптов.
+async function frameSurroundings(frame) {
+  try {
+    const el = await frame.frameElement();
+    return await el.evaluate((node) => {
+      const block = node.closest('.t-rec, section, [class*="popup"], [class*="modal"]') ||
+        (node.parentElement && node.parentElement.parentElement) || node.parentElement;
+      if (!block) return '';
+      const parts = [];
+      let len = 0;
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      let n;
+      while ((n = walker.nextNode()) && len < 3000) {
+        const tag = n.parentElement ? n.parentElement.tagName : '';
+        if (tag === 'STYLE' || tag === 'SCRIPT' || tag === 'NOSCRIPT') continue;
+        const t = n.nodeValue.trim();
+        if (t) { parts.push(t); len += t.length + 1; }
+      }
+      return parts.join(' ').replace(/\s+/g, ' ').slice(0, 3000);
+    });
+  } catch (e) {
+    return '';
+  }
 }
 
 function pickPages(home, startUrl, n) {
@@ -183,12 +224,23 @@ const POLICY_TEXT_RE = /(политик[\s\S]{0,60}персональн|обра
 const stripTags = (s) => s.replace(/<[^>]+>/g, ' ').replace(/&nbsp;|&#160;/g, ' ').replace(/\s+/g, ' ').trim();
 // Признак «это действительно нужный документ», отдельно для каждого типа.
 const LOOKS_LIKE = {
-  policy: /персональн/i,
-  consent: /персональн/i,
+  policy: /(персональн|personal\s+(data|information)|privacy\s+policy)/i,
+  consent: /(персональн|personal\s+(data|information))/i,
   cookie: /(cookie|куки)/i,
-  offer: /(оферт|договор)/i,
-  refund: /возврат/i,
+  offer: /(оферт|договор|terms)/i,
+  refund: /(возврат|refund)/i,
 };
+// Вывод «в документе об этом ничего нет» делаем только по настоящему тексту документа:
+// в нём много профильных слов. Страница с меню и одной ссылкой на файл таким текстом не считается.
+const DENSE = {
+  policy: [/персональн/gi, 5],
+  consent: [/персональн/gi, 3],
+  cookie: [/(cookie|куки)/gi, 3],
+  offer: [/(оферт|договор|исполнител|заказчик|услуг)/gi, 10],
+  refund: [/возврат/gi, 3],
+};
+// Ссылки на файлы и облачные диски: сам документ, скорее всего, лежит там, а не на странице.
+const FILE_LINK_RE = /href\s*=\s*["'][^"']*(\.pdf|\.docx?|\.rtf|disk\.yandex|yadi\.sk|drive\.google|docs\.google|cloud\.mail\.ru|dropbox\.com)[^"']*["']/i;
 // Что ищем внутри документов.
 const MENTIONS = {
   analytics: /(метрик|вебвизор|webvisor|metrica|аналитик)/i,
@@ -273,7 +325,8 @@ function readDocHtml(html, status, kind = 'policy') {
   const ok = re.test(text) || text.length < 1500;
   // Прямое упоминание засчитываем всегда (true). Вывод «не упоминается» (false) делаем только
   // по полноценному тексту документа, иначе - «неизвестно» (null).
-  const full = re.test(text) && text.length >= 1500;
+  const [denseRe, denseMin] = DENSE[kind] || DENSE.policy;
+  const full = text.length >= 2500 && (text.match(denseRe) || []).length >= denseMin && !FILE_LINK_RE.test(html);
   const mentions = Object.fromEntries(Object.entries(MENTIONS).map(([k, r]) => [k, r.test(text) ? true : full ? false : null]));
   return { ok, status, reqText, mentions };
 }
@@ -386,6 +439,10 @@ async function scanSite(browser, startUrl, opts = {}) {
       const alt = await visit(page, startUrl.replace(/^https:/i, 'http:'));
       if (!alt.error) home = alt;
     }
+    // Адрес ведёт на страницу входа в личный кабинет (так бывает у школ на GetCourse): проверять там нечего.
+    if (!home.error && home.data && home.data.loginPage) {
+      home = { url: home.url, error: 'по этому адресу открывается страница входа, а не сайт. Укажите адрес страницы с описанием курса' };
+    }
     pages.push(home);
     if (!home.error) {
       timerFirst = await readTimerTick(page);
@@ -411,43 +468,28 @@ async function scanSite(browser, startUrl, opts = {}) {
 
 const slugify = (s) => String(s).replace(/[^a-z0-9а-яё.-]+/gi, '_').replace(/^_+|_+$/g, '').slice(0, 100) || 'site';
 
-async function main() {
-  const opts = parseArgs(process.argv.slice(2));
-  if (!opts.inputs.length) { help(); process.exit(1); }
-  const cfg = loadConfig(opts.config);
-  const sites = readSites(opts.inputs);
-  if (!sites.length) { console.error('Список сайтов пуст.'); process.exit(1); }
+// Результаты сохраняются по ходу проверки (по строке на сайт), чтобы сбой на 250-м сайте не обнулил работу.
+const PARTIAL = 'partial.jsonl';
 
-  const stamp = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
-  const outDir = path.resolve(opts.out, stamp);
-  fs.mkdirSync(path.join(outDir, 'reports'), { recursive: true });
-  fs.mkdirSync(path.join(outDir, 'letters'), { recursive: true });
-
-  console.log(`Проверяю сайтов: ${sites.length} (одновременно: ${opts.concurrency}, внутренних страниц на сайт: ${opts.pages})`);
-  const browser = await chromium.launch();
-  const queue = sites.map((u, i) => ({ u, i }));
-  const results = new Array(sites.length);
-  let done = 0;
-  const worker = async () => {
-    while (queue.length) {
-      const { u, i } = queue.shift();
-      let r;
-      try {
-        r = await withTimeout(scanSite(browser, u, opts), SITE_TIMEOUT, 'проверка заняла слишком много времени');
-      } catch (e) {
-        r = analyze({ input: u, startUrl: u, scannedAt: new Date().toISOString(), pages: [], error: shortErr(e) });
-      }
-      results[i] = r;
-      done++;
-      const n = r.findings.length;
-      console.log(`[${done}/${sites.length}] ${r.site}: ` + (r.ok
-        ? `${n} ${plural(n, ['замечание', 'замечания', 'замечаний'])} (серьёзных: ${r.counts.high}), баллы: ${r.score}`
-        : `ошибка: ${r.error}`));
+// Что уже проверено в этой папке: итоговый results.json и незавершённый partial.jsonl.
+function loadPrevious(outDir) {
+  const done = new Map();
+  const add = (r) => { if (r && r.input) done.set(r.input, r); };
+  const full = path.join(outDir, 'results.json');
+  if (fs.existsSync(full)) JSON.parse(fs.readFileSync(full, 'utf8')).forEach(add);
+  const part = path.join(outDir, PARTIAL);
+  if (fs.existsSync(part)) {
+    for (const line of fs.readFileSync(part, 'utf8').split('\n')) {
+      if (!line.trim()) continue;
+      try { add(JSON.parse(line)); } catch (e) { /* оборванная строка после сбоя */ }
     }
-  };
-  await Promise.all(Array.from({ length: Math.min(opts.concurrency, sites.length) }, worker));
-  await browser.close();
+  }
+  return done;
+}
 
+// Собирает отчёты, письма и сводные таблицы из готовых результатов.
+function writeOutputs(results, cfg, outDir) {
+  for (const d of ['reports', 'letters']) fs.mkdirSync(path.join(outDir, d), { recursive: true });
   results.sort((a, b) => (Number(b.ok) - Number(a.ok)) || (b.score - a.score));
   const files = {};
   for (const r of results) {
@@ -464,14 +506,79 @@ async function main() {
   fs.writeFileSync(path.join(outDir, 'results.json'), JSON.stringify(results, null, 2));
   fs.writeFileSync(path.join(outDir, 'leads.csv'), renderCsv(results, files));
   fs.writeFileSync(path.join(outDir, 'index.html'), renderIndex(results, cfg, files));
+  fs.rmSync(path.join(outDir, PARTIAL), { force: true });
+  return files;
+}
 
+function printSummary(results, outDir) {
   const ok = results.filter((r) => r.ok);
   console.log(`\nГотово. Проверено: ${ok.length} из ${results.length}. С серьёзными нарушениями: ${ok.filter((r) => r.counts.high).length}.`);
   console.log(`Результаты: ${outDir}`);
   console.log('  index.html - сводная таблица, leads.csv - для Excel, reports/ - отчёты для клиентов, letters/ - черновики писем');
 }
 
-module.exports = { scanSite, normalizeUrl, readSites, pickPages, timerSeconds };
+async function main() {
+  const opts = parseArgs(process.argv.slice(2));
+
+  // Пересборка отчётов из готовых результатов: браузер не нужен.
+  if (opts.render) {
+    const outDir = path.resolve(opts.render);
+    const results = [...loadPrevious(outDir).values()];
+    if (!results.length) { console.error('В этой папке нет результатов проверки: ' + outDir); process.exit(1); }
+    writeOutputs(results, loadConfig(opts.config), outDir);
+    printSummary(results, outDir);
+    return;
+  }
+
+  if (!opts.inputs.length) { help(); process.exit(1); }
+  const cfg = loadConfig(opts.config);
+  const sites = readSites(opts.inputs);
+  if (!sites.length) { console.error('Список сайтов пуст.'); process.exit(1); }
+
+  const stamp = new Date().toISOString().slice(0, 16).replace('T', '_').replace(':', '-');
+  const outDir = opts.resume ? path.resolve(opts.resume) : path.resolve(opts.out, stamp);
+  fs.mkdirSync(outDir, { recursive: true });
+
+  // При продолжении пропускаем то, что уже проверено. Сайты с ошибкой пробуем ещё раз.
+  const previous = opts.resume ? loadPrevious(outDir) : new Map();
+  const results = new Map([...previous].filter(([, r]) => r.ok));
+  const todo = sites.filter((u) => !results.has(u));
+  if (opts.resume) console.log(`Продолжаю проверку: уже готово ${results.size}, осталось ${todo.length}.`);
+
+  console.log(`Проверяю сайтов: ${todo.length} (одновременно: ${opts.concurrency}, внутренних страниц на сайт: ${opts.pages})`);
+  const partial = path.join(outDir, PARTIAL);
+  // Перед продолжением переносим всё готовое в файл незавершённой проверки, чтобы повторный сбой ничего не стёр.
+  if (opts.resume) fs.writeFileSync(partial, [...results.values()].map((r) => JSON.stringify(r) + '\n').join(''));
+  const browser = todo.length ? await chromium.launch() : null;
+  const queue = todo.slice();
+  let done = 0;
+  const worker = async () => {
+    while (queue.length) {
+      const u = queue.shift();
+      let r;
+      try {
+        r = await withTimeout(scanSite(browser, u, opts), SITE_TIMEOUT, 'проверка заняла слишком много времени');
+      } catch (e) {
+        r = analyze({ input: u, startUrl: u, scannedAt: new Date().toISOString(), pages: [], error: shortErr(e) });
+      }
+      results.set(u, r);
+      fs.appendFileSync(partial, JSON.stringify(r) + '\n');
+      done++;
+      const n = r.findings.length;
+      console.log(`[${done}/${todo.length}] ${r.site}: ` + (r.ok
+        ? `${n} ${plural(n, ['замечание', 'замечания', 'замечаний'])} (серьёзных: ${r.counts.high}), баллы: ${r.score}`
+        : `ошибка: ${r.error}`));
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(opts.concurrency, todo.length) }, worker));
+  if (browser) await browser.close();
+
+  const all = [...results.values()];
+  writeOutputs(all, cfg, outDir);
+  printSummary(all, outDir);
+}
+
+module.exports = { scanSite, normalizeUrl, readSites, pickPages, timerSeconds, writeOutputs, loadPrevious, loadConfig };
 
 if (require.main === module) {
   main().catch((e) => { console.error(e); process.exit(1); });

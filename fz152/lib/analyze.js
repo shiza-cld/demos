@@ -6,7 +6,8 @@ const { extractRequisites } = require('./inn');
 
 const POLICY_RE = /(политик|конфиденциальн|privacy|policy|personal[-_ ]?data|персональн|politika)/i;
 const POLICY_PD_RE = /(персональн|конфиденц|privacy|personal[-_ ]?data)/i;
-const CONSENT_DOC_RE = /(согласи[еяю]|consent|soglasi)/i;
+// «Согласие», но не «соглашение» (soglasie, а не soglashenie).
+const CONSENT_DOC_RE = /(согласи[еяю]|consent|soglasi[ey])/i;
 const COOKIE_DOC_RE = /(cookie|куки)/i;
 const OFFER_RE = /(оферт|oferta|offer|договор|dogovor|пользовательск\S*\s+соглашени|услови\S*\s+(оказания|обучения|продажи|использования|покупки|участия)|правила\s+(оказания|пользования|покупки)|terms)/i;
 const REFUND_RE = /(возврат|vozvrat|refund)/i;
@@ -36,8 +37,10 @@ const PAID_STRONG_RE = /(₽|руб\S*|доплат|автопродл)/i;
 
 // Приёмы давления и громкие обещания (ищем в видимом тексте).
 const SCARCITY_RE = /(осталось\s+(всего\s+)?\d+\s+мест\S*|мест\S*\s+осталось|последние\s+\d+\s+мест\S*|только\s+сегодня|цена\s+(вырастет|повысится|увеличится)\s+(через|завтра)|успей(те)?\s+(купить|записаться|забрать))/gi;
-const SHAME_RE = /(нет,?\s+(я\s+)?не\s+хочу\s+[^.!?\n]{3,40}|мне\s+не\s+(нужн|интересн)\S*\s+[^.!?\n]{3,30}|я\s+(лучше\s+)?останусь\s+[^.!?\n]{3,30})/gi;
-const PROMISE_RE = /(лучш(ая|ий|ее|ие)\s+(онлайн-?\s*)?(школ\S*|курс\S*)|лучш\S+\s+(в\s+россии|в\s+мире|на\s+рынке|в\s+городе)|сам(ая|ый|ое)\s+(эффективн|лучш|быстр)\S*\s+\S+|№\s?1\b|номер\s+один|лидер\s+рынка|гарантир\S*\s+(трудоустройств|результат|доход|заработ)\S*|гаранти\S*\s+(трудоустройств|результат|дохода|заработк)\S*|100\s?%\s*(результат|гаранти|трудоустройств)\S*|(заработ\S*|доход\S*)\s+(от|до)\s+\d[\d\s ]*(\s?000|\s?тыс\S*|\s?₽|\s?руб\S*))/gi;
+// Кнопка отказа, которая стыдит человека. Ищем только в текстах кнопок и ссылок, а не в обычном тексте.
+const SHAME_RE = /^(нет,?\s+)?(спасибо,?\s+)?((я\s+)?не\s+хочу\s+\S.{2,50}|мне\s+не\s+(нужн|интересн)\S*\s+\S.{2,40}|я\s+(лучше\s+)?останусь\s+\S.{2,40})$/i;
+// Обещания именно о школе, курсе или результате. Общие слова вроде «самое лучшее, что со мной было» не считаем.
+const PROMISE_RE = /(лучш(ая|ий|ее|ие|ей|ую|его|ем)\s+(онлайн-?\s*)?(школ|курс|академи|программ|обучени)\S*|лучш\S+\s+(в\s+россии|в\s+мире|на\s+рынке|в\s+городе|в\s+снг|в\s+стране)|сам(ая|ый|ое|ые|ой|ую)\s+(эффективн|быстр|полн|современн|крупн|популярн|известн)\S*\s+(способ|метод|курс|школ|программ|обучени|путь|систем)\S*|№\s?1(?!\d)|номер\s+один(?![а-яё])|лидер\S*\s+рынка|гарантир\S*\s+(трудоустройств|результат|доход|заработ)\S*|гаранти\S*\s+(трудоустройств|результата|дохода|заработка)\S*|100\s?%\s*(результат|гаранти|трудоустройств)\S*|(заработ\S*|доход\S*)\s+(от|до)\s+\d[\d \u00a0]*(\s?000|\s?тыс\S*|\s?₽|\s?руб\S*))/gi;
 
 // Дети, родители, рассылки.
 const AGE_RE = /(\b(от|с)\s?[3-9]\s?(до|-)\s?1[0-7]\s?лет|\b[3-9]\s?-\s?1[0-7]\s?лет)/i;
@@ -138,6 +141,18 @@ const FOREIGN_FORMS = [
 
 const GENERIC_LOCAL_RE = /^(info|hello|hi|mail|office|support|help|sales|admin|contact|contacts|zakaz|order|orders|school|team|manager|pr|marketing|partner|partners|reception|client|clients|feedback|welcome|edu|study|kurs|kursy|courses|academy|director|buh|hr|job|jobs|press|media|service|shop|store|booking|zapis|priem|post|general|company|studio|ask|question|questions|care|customer|otdel|sale|corp)([._-]|\d|$)/i;
 const BAD_EMAIL_RE = /(\.(png|jpe?g|gif|webp|svg|js|css|ico)$)|(@(example|domain|yourdomain|site|mysite)\.)|(^(name|your|email|example|test|user|username|ivanov|login)@)|sentry|wixpress/i;
+
+// Пояснение к пункту чек-листа про уведомление в Роскомнадзор (его проверяют вручную).
+const RKN_NOTE = ' в реестре операторов на pd.rkn.gov.ru. С 30 мая 2025 года за неподачу уведомления штрафуют на сумму до 300 тыс. ₽ (ч. 10 ст. 13.11 КоАП).';
+
+// Фразы, которые добавляются к замечаниям только при определённых находках.
+const EXTRA_NOTES = {
+  meta: ' И отдельно: компания Meta признана в России экстремистской организацией, так что её пиксель на сайте - дополнительный риск.',
+  crossBorderDescribed: 'В политике упоминается трансграничная передача. Проверьте, что уведомление о ней подано в Роскомнадзор.',
+  fontsTilda: ' Если шрифт выбран из встроенной библиотеки Tilda, лицензия уже есть.',
+  fontsAdobe: ' Шрифты, подключённые через Adobe Fonts, уже лицензированы.',
+  reviewsManual: 'Автоматически это не проверить. Убедитесь, что все отзывы от реальных людей, и дайте ссылки на независимые площадки.',
+};
 
 // Вес замечаний для сортировки «горячих» сайтов.
 const WEIGHT = { high: 3, medium: 2, low: 1 };
@@ -464,7 +479,10 @@ function pageLabel(url, homeUrl) {
   if (!u) return String(url);
   const hu = safeUrl(homeUrl);
   const trim = (x) => x.replace(/\/index\.html?$/i, '/').replace(/\/+$/, '');
-  if (u.pathname === '/' || (hu && trim(u.pathname) === trim(hu.pathname))) return 'главная страница';
+  // Начальный адрес считаем главной, только если он похож на корень сайта или раздела (кончается на «/»).
+  // Если проверку начали со страницы курса (/kurs), так её и называем.
+  const startIsRoot = hu && /\/(index\.html?)?$/i.test(hu.pathname);
+  if (u.pathname === '/' || (startIsRoot && trim(u.pathname) === trim(hu.pathname))) return 'главная страница';
   const p = decodeSafe(u.pathname);
   return p.length > 60 ? p.slice(0, 57) + '…' : p;
 }
@@ -609,11 +627,26 @@ function formLabel(f, homeUrl) {
 }
 
 // Короткие цитаты из текста по регулярному выражению (без повторов).
-function snippets(re, text, max = 3) {
+// ctx - сколько символов показать вокруг находки, чтобы владельцу сайта было проще найти фразу.
+// Цитата не выходит за пределы строки и предложения и не обрывается посреди слова.
+function snippets(re, text, max = 3, ctx = 0) {
   const out = [];
   const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+  const stop = /[.!?\n]/;
   for (const m of text.matchAll(g)) {
-    const s = m[0].replace(/\s+/g, ' ').trim().slice(0, 70);
+    let from = m.index;
+    let to = m.index + m[0].length;
+    if (ctx) {
+      let a = from;
+      while (a > 0 && from - a < ctx && !stop.test(text[a - 1])) a--;
+      if (a > 0 && !stop.test(text[a - 1])) { const sp = text.indexOf(' ', a); a = sp !== -1 && sp < from ? sp + 1 : from; }
+      let b = to;
+      while (b < text.length && b - to < ctx && !stop.test(text[b])) b++;
+      if (b < text.length && !stop.test(text[b])) { const sp = text.lastIndexOf(' ', b); b = sp > to ? sp : to; }
+      from = a;
+      to = b;
+    }
+    const s = text.slice(from, to).replace(/\s+/g, ' ').trim().slice(0, 110);
     if (s && !out.some((x) => x.toLowerCase() === s.toLowerCase())) out.push(s);
     if (out.length >= max) break;
   }
@@ -679,6 +712,8 @@ function analyze(scan) {
     for (const f of p.data.forms) {
       for (const c of shownBoxes(f)) if (c.checked && isPaidBox(c)) paidLabels.add(cut(c.label, 80));
       if (!f.pdCount || !f.fields.some((k) => STRONG_KINDS.has(k))) continue;
+      // Форма входа (логин и пароль) - не заявка: согласие в ней не ищем.
+      if (f.hasPassword && f.fields.length <= 1) continue;
       const consent = consentType(f);
       const adPre = adPrechecked(f);
       const combined = consentCombined(f);
@@ -875,12 +910,10 @@ function analyze(scan) {
   if (foreign.length) {
     const names = foreign.map((s) => s.name).join(', ');
     const onlyLight = foreign.every((s) => LIGHT_KINDS.has(s.kind));
-    const meta = foreign.some((s) => s.meta)
-      ? ' И отдельно: компания Meta признана в России экстремистской организацией, так что её пиксель на сайте - дополнительный риск.'
-      : '';
+    const meta = foreign.some((s) => s.meta) ? EXTRA_NOTES.meta : '';
     const details = foreign.map((s) => `Нашли сервис: ${s.name}.`);
     const described = says(['policy'], 'crossBorder');
-    if (described) details.push('В политике упоминается трансграничная передача. Проверьте, что уведомление о ней подано в Роскомнадзор.');
+    if (described) details.push(EXTRA_NOTES.crossBorderDescribed);
     add('foreign_services', details, { services: names, meta }, onlyLight || described ? 'low' : 'medium');
   }
 
@@ -941,12 +974,13 @@ function analyze(scan) {
   if (t && t.evergreen) {
     add('dark_timer', [`Первый заход: ${quote(t.first)}. Повторный заход через ${t.delta} с: ${quote(t.second)}.`]);
   }
-  const pressure = [...snippets(SCARCITY_RE, allText), ...snippets(SHAME_RE, allText)].slice(0, 4);
+  const shameButtons = uniq(okPages.flatMap((p) => p.data.buttons || [])).filter((b) => SHAME_RE.test(b));
+  const pressure = [...snippets(SCARCITY_RE, allText, 3, 25), ...shameButtons].slice(0, 4);
   if (pressure.length) {
     add('dark_patterns', pressure.map((s) => `Фраза на сайте: ${quote(s)}.`), { examples: pressure.map(quote).join(', '), first: quote(pressure[0]) });
   }
 
-  const promises = snippets(PROMISE_RE, allText, 4);
+  const promises = snippets(PROMISE_RE, allText, 4, 30);
   if (promises.length) {
     add('empty_promises', promises.map((s) => `Фраза на сайте: ${quote(s)}.`), { examples: promises.map(quote).join(', '), first: quote(promises[0]) });
   }
@@ -975,7 +1009,8 @@ function analyze(scan) {
   // Удобство для всех
   const im = home.data.images || { total: 0, noAlt: 0, emptyAlt: 0, examples: [] };
   const withoutAlt = im.noAlt + im.emptyAlt;
-  const imgExamples = im.examples.filter((n) => /[a-zа-я]{2}/i.test(n));
+  // В примеры берём только осмысленные имена файлов, а не наборы цифр и букв.
+  const imgExamples = im.examples.filter((n) => /[a-zа-я]{3}/i.test(n) && !/^[0-9a-f_-]{10,}\./i.test(n)).slice(0, 4);
   if (im.noAlt >= 3 || (im.total >= 5 && withoutAlt / im.total >= 0.8)) {
     add('img_no_alt', [`Картинок на главной: ${im.total}, без описания: ${withoutAlt}.`].concat(imgExamples.length ? [`Например: ${imgExamples.join(', ')}.`] : []),
       { count: withoutAlt, total: im.total });
@@ -1014,8 +1049,7 @@ function analyze(scan) {
   const paidFonts = PAID_FONTS.filter(([, re]) => webFonts.some((f) => re.test(f))).map(([name]) => name);
   if (paidFonts.length) {
     const typekit = resUrls.some((u) => /(^|\.)typekit\.(net|com)$/.test(u.hostname));
-    const note = isTilda ? ' Если шрифт выбран из встроенной библиотеки Tilda, лицензия уже есть.'
-      : typekit ? ' Шрифты, подключённые через Adobe Fonts, уже лицензированы.' : '';
+    const note = isTilda ? EXTRA_NOTES.fontsTilda : typekit ? EXTRA_NOTES.fontsAdobe : '';
     add('paid_fonts', paidFonts.map((x) => `Шрифт: ${x}.`), { fonts: paidFonts.join(', '), note });
   }
 
@@ -1054,8 +1088,7 @@ function analyze(scan) {
       group: 'pd',
       item: 'Подано уведомление в Роскомнадзор',
       status: 'manual',
-      note: (inn ? `Проверьте ИНН ${inn}` : 'Проверьте по ИНН компании') +
-        ' в реестре операторов на pd.rkn.gov.ru. С 30 мая 2025 года за неподачу уведомления штрафуют на сумму до 300 тыс. ₽ (ч. 10 ст. 13.11 КоАП).',
+      note: (inn ? `Проверьте ИНН ${inn}` : 'Проверьте по ИНН компании') + RKN_NOTE,
     },
     // Cookie
     { group: 'cookie', item: 'Есть баннер о cookie', status: cookieBanner ? 'ok' : analyticsCookies.length ? (sev('cookies_no_notice') === 'medium' ? 'fail' : 'warn') : 'na' },
@@ -1071,7 +1104,7 @@ function analyze(scan) {
       group: 'commerce',
       item: 'Отзывы настоящие',
       status: dupReviews ? 'warn' : hasReviews ? 'manual' : 'na',
-      note: hasReviews && !dupReviews ? 'Автоматически это не проверить. Убедитесь, что все отзывы от реальных людей, и дайте ссылки на независимые площадки.' : '',
+      note: hasReviews && !dupReviews ? EXTRA_NOTES.reviewsManual : '',
     },
     { group: 'commerce', item: 'Галочка согласия на рекламу не стоит заранее', status: adPre.length ? 'fail' : 'ok' },
     { group: 'commerce', item: 'Понятно, как отписаться от рассылки', status: subscription ? st(state.unsubscribe, 'manual') : 'na' },
@@ -1090,5 +1123,5 @@ function analyze(scan) {
 
 module.exports = {
   analyze, docCandidates, linkKind, consentType, hostOf, stripWww, safeUrl, siteLabel, baseDomain,
-  RULES, GROUPS, POLICY_RE, CONSENT_DOC_RE, DOC_KINDS,
+  RULES, GROUPS, RKN_NOTE, EXTRA_NOTES, POLICY_RE, CONSENT_DOC_RE, DOC_KINDS,
 };
