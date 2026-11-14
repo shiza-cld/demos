@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 const { extractPageData, readTimers } = require('./lib/extract');
-const { analyze, docCandidates, linkKind, stripWww, safeUrl } = require('./lib/analyze');
+const { analyze, docCandidates, linkKind, stripWww, safeUrl, hostOf } = require('./lib/analyze');
 const { renderReport, renderLetter, renderIndex, renderCsv, plural } = require('./lib/report');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -157,9 +157,11 @@ async function visit(page, url) {
       const around = await frameSurroundings(fr);
       for (const f of sub.forms) {
         f.frameUrl = fr.url();
-        f.blockText = (f.blockText + ' ' + around).slice(0, 7000);
+        f.blockText = (f.blockText + ' ' + around).slice(0, 24000);
         data.forms.push(f);
       }
+      // Ссылки на политику и согласие часто стоят внутри самого виджета: учитываем и их.
+      data.links.push(...sub.links.slice(0, 150));
     } catch (e) { /* фрейм недоступен, пропускаем */ }
   }
   return { url: page.url(), status, data };
@@ -208,6 +210,8 @@ function pickPages(home, startUrl, n) {
     const key = u.origin + u.pathname;
     if (seen.has(key)) continue;
     if (linkKind(l, host)) continue; // документы проверяются отдельно
+    // Служебные страницы платформ (вход, обратная связь GetCourse и т. п.) владелец сайта не настраивает.
+    if (/^\/(cms\/system\/|login|logout|signin|sign-in|wp-admin|wp-login)/i.test(u.pathname)) continue;
     seen.add(key);
     const s = l.text + ' ' + decodeSafe(u.pathname);
     let score = 0;
@@ -269,8 +273,12 @@ async function checkDoc(context, href, kind, depth = 0) {
     const html = decodeBody(await r.body(), ct);
     const result = readDocHtml(html, status, kind);
     if (depth === 0 && kind === 'policy') {
-      const link = [...html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
-        .map((m) => ({ href: m[1], text: stripTags(m[2]) }))
+      const anchors = [...html.matchAll(/<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)]
+        .map((m) => ({ href: m[1], text: stripTags(m[2]) }));
+      // На странице со списком документов бывают ссылки на оферту и правила возврата: запоминаем, что они есть.
+      result.mentions.offerLink = anchors.some((l) => /(оферт|договор)/i.test(l.text)) ? true : null;
+      result.mentions.refundLink = anchors.some((l) => /возврат/i.test(l.text)) ? true : null;
+      const link = anchors
         .find((l) => POLICY_TEXT_RE.test(l.text) && !/согласи/i.test(l.text) && !/^(#|mailto:|tel:|javascript:)/i.test(l.href));
       if (link) {
         let abs = null;
@@ -287,6 +295,9 @@ async function checkDoc(context, href, kind, depth = 0) {
               const b = sub.mentions[k];
               result.mentions[k] = a === true || b === true ? true : b === false ? false : null;
             }
+            // Ссылки на оферту и возврат считаем только по самой странице со списком.
+            result.mentions.offerLink = result.mentions.offerLink === true ? true : null;
+            result.mentions.refundLink = result.mentions.refundLink === true ? true : null;
           }
         }
       }
@@ -487,12 +498,29 @@ function loadPrevious(outDir) {
   return done;
 }
 
+// Два адреса из списка могут вести на один и тот же сайт (старый домен переадресует на новый).
+// Чтобы не написать одной компании дважды, для таких адресов оставляем один отчёт.
+// Если же в списке намеренно указаны две страницы одного сайта, обе остаются.
+function markDuplicates(results) {
+  const direct = new Map();     // сайт, указанный в списке напрямую
+  const redirected = new Map(); // сайт, на который переадресовал другой адрес
+  for (const r of results) if (r.ok && hostOf(r.input) === r.domain && !direct.has(r.domain)) direct.set(r.domain, r.site);
+  return results.map((r) => {
+    if (!r.ok || hostOf(r.input) === r.domain) return r;
+    const other = direct.get(r.domain) || redirected.get(r.domain);
+    if (other) return { ...r, ok: false, error: `адрес ведёт на тот же сайт, что и ${other}` };
+    redirected.set(r.domain, r.site);
+    return r;
+  });
+}
+
 // Собирает отчёты, письма и сводные таблицы из готовых результатов.
 function writeOutputs(results, cfg, outDir) {
   for (const d of ['reports', 'letters']) fs.mkdirSync(path.join(outDir, d), { recursive: true });
   results.sort((a, b) => (Number(b.ok) - Number(a.ok)) || (b.score - a.score));
+  const shown = markDuplicates(results);
   const files = {};
-  for (const r of results) {
+  for (const r of shown) {
     if (!r.ok) continue;
     const slug = slugify(r.site);
     files[r.site] = { report: `reports/${slug}.html` };
@@ -504,8 +532,8 @@ function writeOutputs(results, cfg, outDir) {
     }
   }
   fs.writeFileSync(path.join(outDir, 'results.json'), JSON.stringify(results, null, 2));
-  fs.writeFileSync(path.join(outDir, 'leads.csv'), renderCsv(results, files));
-  fs.writeFileSync(path.join(outDir, 'index.html'), renderIndex(results, cfg, files));
+  fs.writeFileSync(path.join(outDir, 'leads.csv'), renderCsv(shown, files));
+  fs.writeFileSync(path.join(outDir, 'index.html'), renderIndex(shown, cfg, files));
   fs.rmSync(path.join(outDir, PARTIAL), { force: true });
   return files;
 }

@@ -10,6 +10,7 @@ const { chromium } = require('playwright');
 const os = require('os');
 const { scanSite, writeOutputs, loadPrevious } = require('../scan');
 const { innValid, ogrnValid } = require('../lib/inn');
+const { linkKind } = require('../lib/analyze');
 
 const ROOT = path.join(__dirname, 'fixtures');
 // Для проверки платных шрифтов тестовый сервер отдаёт системный шрифт под именем Gilroy.
@@ -28,7 +29,8 @@ const CASES = {
   adbox: { has: ['ad_prechecked'], not: ['consent_prechecked', 'no_consent', 'no_consent_doc', 'no_policy'] },
   // Политика доступна через «Правовая информация»; ссылки на yandex.ru/legal - не политика сайта;
   // Метрика описана в документах - Вебвизор не ругаем.
-  legalhub: { has: [], not: ['no_policy', 'policy_broken', 'no_consent', 'no_consent_doc', 'webvisor'] },
+  // Оферта тоже лежит в разделе документов: «нет оферты» и «нет правил возврата» не пишем.
+  legalhub: { has: [], not: ['no_policy', 'policy_broken', 'no_consent', 'no_consent_doc', 'webvisor', 'no_offer', 'no_refund'] },
   // Поле поиска в карте - не форма заявки.
   map: { has: [], not: ['no_consent', 'no_policy', 'no_consent_doc'] },
   // GetCourse: видимые галочки не отмечены, отмеченные - скрытые служебные копии; согласие склеено с офертой.
@@ -48,6 +50,8 @@ const CASES = {
   kids: { has: ['children_consent', 'excess_data', 'no_unsubscribe', 'stock_names'], not: ['no_consent', 'no_policy'] },
   // Форма в виджете (встроенном окне) без галочки, а слова о согласии стоят рядом на странице: это «согласие фразой», а не «без согласия».
   frames: { has: ['consent_passive'], not: ['no_consent', 'no_policy'] },
+  // Политика и согласие указаны только внутри виджета (на самой странице ссылок нет), поле названо «Эл. адрес».
+  frames2: { has: [], not: ['no_policy', 'no_consent', 'no_consent_doc', 'excess_data'] },
   // Честный магазин: оферта, возврат, автопродление, баннер cookie, настоящий таймер, форма входа без галочки. Ничего лишнего.
   shopgood: {
     has: [],
@@ -82,6 +86,20 @@ function serve() {
   check(ogrnValid('1027700000019'), 'валидный ОГРН не прошёл проверку');
   check(!ogrnValid('1027700000010'), 'невалидный ОГРН прошёл проверку');
   console.log(failed ? '' : '  ✓ контрольные суммы');
+
+  console.log('типы ссылок на документы:');
+  {
+    const before = failed;
+    const kind = (href, text) => linkKind({ href, text }, 'x.ru');
+    check(kind('https://x.ru/terms-of-use/4/', 'Политика обработки данных') === 'policy', 'текст ссылки должен быть важнее адреса: «Политика» по адресу terms-of-use');
+    check(kind('https://x.ru/polzovatelskoe-soglashenie', 'Пользовательское соглашение') === 'offer', 'пользовательское соглашение - это оферта, а не согласие');
+    check(kind('https://x.ru/privacy_soglasie', '') === 'consent', 'soglasie в адресе - это согласие');
+    check(kind('https://yandex.ru/legal/maps_termsofuse/', 'Условия использования') === null, 'условия Яндекс Карт - не оферта сайта');
+    check(kind('https://disk.yandex.ru/i/abc', 'Договор-оферта') === 'offer', 'оферта на Яндекс Диске - документ сайта');
+    check(kind('https://school.getcourse.ru/oferta', 'Оферта') === 'offer', 'оферта на поддомене GetCourse - документ школы');
+    check(kind('https://getcourse.ru/oferta', 'Оферта') === null, 'оферта самой платформы GetCourse - не документ школы');
+    if (failed === before) console.log('  ✓');
+  }
 
   const server = await serve();
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -131,6 +149,11 @@ function serve() {
     writeOutputs([...loadPrevious(dir).values()], { ...cfg, brand: 'Тест-бренд' }, dir);
     const report = fs.readFileSync(path.join(dir, 'reports', fs.readdirSync(path.join(dir, 'reports'))[0]), 'utf8');
     check(report.includes('Тест-бренд'), 'после пересборки в отчёте нет нового названия сервиса');
+    // Старый домен переадресует на сайт, который уже есть в списке: второй отчёт не нужен.
+    const dup = { ...a, input: 'http://old-domain.example/' };
+    writeOutputs([a, b, dup], cfg, dir);
+    check(fs.readdirSync(path.join(dir, 'reports')).length === 2, 'для адреса-дубля не должно быть отдельного отчёта');
+    check(fs.readFileSync(path.join(dir, 'index.html'), 'utf8').includes('тот же сайт'), 'в сводке нет пометки про адрес-дубль');
     fs.rmSync(dir, { recursive: true, force: true });
     if (failed === before) console.log('  ✓');
   }

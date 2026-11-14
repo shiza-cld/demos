@@ -16,7 +16,8 @@ const AD_WORDS_RE = /(реклам|рассылк|новост|предложе�
 // Ссылки на «раздел» юридических документов («Правовая информация», /legal) засчитываем как путь к политике.
 const HUB_RE = /(правов\S*\s+информац|юридическ\S*\s+информац|правовые\s+документ|^документы$|\/legal\b|\/docs?\b|\/documents\b)/i;
 // Поля, по которым форму точно можно считать сбором персональных данных.
-const STRONG_KINDS = new Set(['телефон', 'e-mail', 'имя', 'мессенджер', 'паспортные данные', 'СНИЛС', 'дата рождения']);
+// Одного имени мало: нужна возможность связаться с человеком или документ.
+const STRONG_KINDS = new Set(['телефон', 'e-mail', 'мессенджер', 'паспортные данные', 'СНИЛС']);
 // Доменные зоны второго уровня, где «сайт» - это третий уровень.
 const MULTI_SUFFIX = new Set(['tilda.ws', 'github.io', 'com.ru', 'net.ru', 'org.ru', 'msk.ru', 'spb.ru', 'pp.ru', 'co.uk', 'com.ua', 'org.ua', 'com.kz', 'gitlab.io', 'netlify.app', 'vercel.app', 'taplink.cc', 'nethouse.ru', 'wixsite.com', 'tb.ru', 'ucoz.ru', 'narod.ru']);
 const PASSIVE_RE = /(нажимая|нажав|отправляя|отправив|оставляя|оставив|заполняя|заполнив|регистрируясь|продолжая)[^.!?]{0,160}(соглаша|соглас|принима|даю|подтвержда|ознакомл)/i;
@@ -40,7 +41,7 @@ const SCARCITY_RE = /(осталось\s+(всего\s+)?\d+\s+мест\S*|ме�
 // Кнопка отказа, которая стыдит человека. Ищем только в текстах кнопок и ссылок, а не в обычном тексте.
 const SHAME_RE = /^(нет,?\s+)?(спасибо,?\s+)?((я\s+)?не\s+хочу\s+\S.{2,50}|мне\s+не\s+(нужн|интересн)\S*\s+\S.{2,40}|я\s+(лучше\s+)?останусь\s+\S.{2,40})$/i;
 // Обещания именно о школе, курсе или результате. Общие слова вроде «самое лучшее, что со мной было» не считаем.
-const PROMISE_RE = /(лучш(ая|ий|ее|ие|ей|ую|его|ем)\s+(онлайн-?\s*)?(школ|курс|академи|программ|обучени)\S*|лучш\S+\s+(в\s+россии|в\s+мире|на\s+рынке|в\s+городе|в\s+снг|в\s+стране)|сам(ая|ый|ое|ые|ой|ую)\s+(эффективн|быстр|полн|современн|крупн|популярн|известн)\S*\s+(способ|метод|курс|школ|программ|обучени|путь|систем)\S*|№\s?1(?!\d)|номер\s+один(?![а-яё])|лидер\S*\s+рынка|гарантир\S*\s+(трудоустройств|результат|доход|заработ)\S*|гаранти\S*\s+(трудоустройств|результата|дохода|заработка)\S*|100\s?%\s*(результат|гаранти|трудоустройств)\S*|(заработ\S*|доход\S*)\s+(от|до)\s+\d[\d \u00a0]*(\s?000|\s?тыс\S*|\s?₽|\s?руб\S*))/gi;
+const PROMISE_RE = /(лучш(ая|ий|ее|ие|ей|ую|его|ем)\s+(онлайн-?\s*)?(школ|курс|академи|программ|обучени)\S*|лучш\S+\s+(в\s+россии|в\s+мире|на\s+рынке|в\s+городе|в\s+снг|в\s+стране)|сам(ая|ый|ое|ые|ой|ую)\s+(эффективн|быстр|полн|современн|крупн)\S*\s+(способ|метод|курс|школ|программ|обучени|путь|систем)\S*|№\s?1(?!\d)|номер\s+один(?![а-яё])|лидер\S*\s+рынка|гарантир\S*\s+(трудоустройств|результат|доход|заработ)\S*|гаранти\S*\s+(трудоустройств|результата|дохода|заработка)\S*|100\s?%\s*(результат|гаранти|трудоустройств)\S*|(заработ\S*|доход\S*)\s+(от|до)\s+\d[\d \u00a0]*(\s?000|\s?тыс\S*|\s?₽|\s?руб\S*))/gi;
 
 // Дети, родители, рассылки.
 const AGE_RE = /(\b(от|с)\s?[3-9]\s?(до|-)\s?1[0-7]\s?лет|\b[3-9]\s?-\s?1[0-7]\s?лет)/i;
@@ -499,15 +500,33 @@ function linkKind(l, siteHost) {
   const path = u ? decodeSafe(u.pathname + u.hash) : '';
   const text = l.text || '';
   const own = !siteHost || !u || sameSite(u.hostname, siteHost);
-  const s = own ? text + ' ' + path : text;
   if (/(реклам|рассылк)/i.test(text)) return null; // согласие на рекламу - не про обработку персональных данных
-  if (CONSENT_DOC_RE.test(s) && !COOKIE_DOC_RE.test(text)) return 'consent';
+  // «Условия использования» Яндекс Карт или оферта платёжного сервиса - это чужие документы, а не документы сайта.
+  if (!own && u && isThirdPartyLegal(u)) return null;
+  // Сначала смотрим на текст ссылки: он точнее адреса («Политика» по адресу /terms-of-use/4 - это политика, а не оферта).
+  const byText = docKind(text);
+  if (byText) return byText;
+  if (!own) return null;
+  return docKind(path) || (HUB_RE.test(text.trim() + ' ' + path) ? 'policy' : null);
+}
+
+// Правовые страницы крупных сервисов. Файлы на облачных дисках (там владельцы часто хранят свои документы) сюда не входят.
+const BIG_SERVICE_RE = /(^|\.)(yandex\.(ru|com|net)|ya\.ru|google\.[a-z.]+|vk\.com|vk\.ru|telegram\.org|whatsapp\.com|apple\.com|microsoft\.com|cloudpayments\.ru|yookassa\.ru|yoomoney\.ru|robokassa\.(ru|com)|tinkoff\.ru|tbank\.ru|sberbank\.ru|prodamus\.ru|payform\.ru|2gis\.(ru|com)|jivo\.ru|jivosite\.com|mail\.ru|ok\.ru|rutube\.ru|youtube\.com|facebook\.com|instagram\.com|cloudflare\.com)$/i;
+const STORAGE_RE = /^(disk\.yandex\.[a-z.]+|yadi\.sk|docs\.google\.com|drive\.google\.com|cloud\.mail\.ru)$/i;
+const PLATFORM_ROOTS = new Set(['getcourse.ru', 'getcourse.io', 'tilda.cc', 'tilda.ru', 'taplink.cc', 'wordpress.org', 'wordpress.com']);
+function isThirdPartyLegal(u) {
+  const host = stripWww(u.hostname);
+  if (STORAGE_RE.test(host)) return false;
+  return PLATFORM_ROOTS.has(host) || BIG_SERVICE_RE.test(host);
+}
+
+function docKind(s) {
+  if (CONSENT_DOC_RE.test(s) && !COOKIE_DOC_RE.test(s)) return 'consent';
   if (POLICY_PD_RE.test(s)) return 'policy';
   if (COOKIE_DOC_RE.test(s)) return 'cookie';
   if (REFUND_RE.test(s)) return 'refund';
   if (OFFER_RE.test(s)) return 'offer';
   if (POLICY_RE.test(s)) return 'policy';
-  if (own && HUB_RE.test(text.trim() + ' ' + path)) return 'policy';
   return null;
 }
 
@@ -595,9 +614,12 @@ const duplicateMixed = (f) => {
 // Одна галочка и «принимаю оферту», и «согласен на обработку персональных данных».
 const consentCombined = (f) => shownBoxes(f).some((c) => PD_WORDS_RE.test(c.label) && COMBINED_RE.test(c.label));
 
+// Адреса сервисов, которые встречаются в коде страниц (карты, конструкторы, виджеты): это не контакты владельца.
+const VENDOR_EMAIL_RE = /@([a-z0-9-]+\.)*(2gis\.(ru|com)|tilda\.(cc|ws)|tildacdn\.com|getcourse\.(ru|io)|sentry\.io|yandex-team\.ru|google\.com|w3\.org|schema\.org|wix\.com|jivosite\.com|jivo\.ru|bitrix24\.ru|amocrm\.ru|taplink\.cc|github\.com|wordpress\.org|example\.(com|ru|org))$/i;
+
 function classifyEmails(emails, siteHost) {
   const clean = uniq(emails.map((e) => e.toLowerCase().trim()))
-    .filter((e) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(e) && !BAD_EMAIL_RE.test(e));
+    .filter((e) => /^[^@\s]+@[^@\s]+\.[a-z]{2,}$/i.test(e) && !BAD_EMAIL_RE.test(e) && !VENDOR_EMAIL_RE.test(e));
   const own = (e) => (hostOf('http://' + e.split('@')[1]).endsWith(siteHost) ? 1 : 0);
   clean.sort((a, b) => own(b) - own(a));
   return {
@@ -623,7 +645,9 @@ function detectPlatform(home) {
 function formLabel(f, homeUrl) {
   const where = f.pages.size > 1 ? `на ${f.pages.size} страницах` : wherePage(f.page, homeUrl);
   const frame = f.frameUrl ? `, во встроенном окне ${hostOf(f.frameUrl)}` : '';
-  return `«${f.fields.join(', ')}» (${where}${frame})`;
+  // Скрытую форму владельцу трудно найти глазами: подсказываем, что она открывается по кнопке.
+  const hidden = f.visible ? '' : ', открывается по кнопке';
+  return `«${f.fields.join(', ')}» (${where}${frame}${hidden})`;
 }
 
 // Короткие цитаты из текста по регулярному выражению (без повторов).
@@ -722,7 +746,7 @@ function analyze(scan) {
       const entry = {
         fields: f.fields, consent, adPre, combined, dupMixed: duplicateMixed(f),
         hasAdBox: shownBoxes(f).some(isAdBox), fieldCount: f.fieldCount,
-        text: (f.formText + ' ' + f.blockText).slice(0, 4000),
+        text: (f.formText + ' ' + f.blockText).slice(0, 30000),
         page: p.url, pages: new Set([p.url]), frameUrl: f.frameUrl || null, visible: f.visible,
       };
       seen.set(key, entry);
@@ -947,11 +971,14 @@ function analyze(scan) {
 
   // Продажи и реклама
   if (commerce) {
-    const offerOk = cands.offer.some(docOk);
+    // Оферта может быть не на самих страницах, а в разделе с документами: там мы видим только ссылку на неё.
+    const offerInHub = says(['policy'], 'offerLink');
+    const offerOk = cands.offer.some(docOk) || offerInHub;
     state.offer = offerOk ? 'ok' : 'fail';
     if (!offerOk) add('no_offer', ['На сайте есть цены и оплата, а ссылки на оферту или договор не нашли.']);
-    const refundOk = cands.refund.some(docOk) || REFUND_TEXT_RE.test(allText) || says(['offer'], 'refund');
+    const refundOk = cands.refund.some(docOk) || REFUND_TEXT_RE.test(allText) || says(['offer'], 'refund') || says(['policy'], 'refundLink');
     if (refundOk) state.refund = 'ok';
+    else if (offerInHub && !cands.offer.some(docOk)) state.refund = 'manual'; // оферту не читали, утверждать нечего
     else if (knownAbsent(['offer'], 'refund')) {
       state.refund = 'fail';
       add('no_refund', ['Ни на сайте, ни в оферте нет правил возврата денег.']);

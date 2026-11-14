@@ -100,7 +100,8 @@ function extractPageData() {
     if (/(паспорт|passport)/.test(s)) return 'паспортные данные';
     if (/(whatsapp|telegram)/.test(s)) return 'мессенджер';
     if (TEL_RE.test(s) || /(phone|телефон)/.test(s)) return 'телефон';
-    if (/(e-?mail|почт)/.test(s)) return 'e-mail';
+    // «Эл. адрес» - это почта, а не почтовый адрес.
+    if (/(e-?mail|почт|эл\.?\s*адрес|электронн\S*\s+адрес)/.test(s)) return 'e-mail';
     if (/(рожден|bday)/.test(s)) return 'дата рождения';
     if (/(фамили|отчеств|имя|name)/.test(s)) return 'имя';
     if (/(адрес|address)/.test(s)) return 'адрес';
@@ -138,8 +139,9 @@ function extractPageData() {
       pdCount: pd.length,
       fieldCount: fields.length,
       checkboxes,
-      formText: textOf(root, 2000),
-      blockText: textOf(block, 4000),
+      // Берём с запасом: в длинных блоках слова о согласии могут стоять далеко от полей.
+      formText: textOf(root, 6000),
+      blockText: textOf(block, 20000),
       links: linksIn(root === block ? root : block),
     };
   };
