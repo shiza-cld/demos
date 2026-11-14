@@ -52,6 +52,12 @@ const CASES = {
   frames: { has: ['consent_passive'], not: ['no_consent', 'no_policy'] },
   // Политика и согласие указаны только внутри виджета (на самой странице ссылок нет), поле названо «Эл. адрес».
   frames2: { has: [], not: ['no_policy', 'no_consent', 'no_consent_doc', 'excess_data'] },
+  // Галочка согласия в виджете появляется через пару секунд после загрузки: сканер должен её дождаться.
+  frames3: { has: [], not: ['no_consent', 'consent_passive', 'no_consent_doc', 'keyboard_nav'] },
+  // Отдельной политики нет, но раздел о персональных данных есть в пользовательском соглашении: пишем мягче.
+  offerpolicy: { has: ['policy_inside_offer'], not: ['no_policy', 'policy_broken'] },
+  // Документы отвечают роботу ошибкой 503 (защита от ботов): это не «битая ссылка» и не «документа нет».
+  blocked: { has: [], not: ['policy_broken', 'no_policy', 'no_consent_doc', 'no_deletion_info'] },
   // Честный магазин: оферта, возврат, автопродление, баннер cookie, настоящий таймер, форма входа без галочки. Ничего лишнего.
   shopgood: {
     has: [],
@@ -64,6 +70,8 @@ const CASES = {
 function serve() {
   const server = http.createServer((req, res) => {
     let p = decodeURIComponent(req.url.split('?')[0]);
+    // Имитация защиты от роботов: такие адреса отвечают ошибкой 503.
+    if (/-503\./.test(p)) { res.writeHead(503); res.end('blocked'); return; }
     if (p === '/font.ttf' && FONT) { res.writeHead(200, { 'content-type': 'font/ttf' }); res.end(fs.readFileSync(FONT)); return; }
     if (p.endsWith('/')) p += 'index.html';
     const file = path.join(ROOT, path.normalize(p).replace(/^(\.\.[/\\])+/, ''));

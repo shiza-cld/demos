@@ -189,6 +189,13 @@ const RULES = {
     tilda: 'В Tilda создайте отдельную страницу «Политика обработки персональных данных» и добавьте ссылку в подвал и под кнопку каждой формы.',
     short: 'на сайте нет политики обработки персональных данных, хотя формы собирают {fields}',
   },
+  policy_inside_offer: {
+    group: 'pd', severity: 'medium',
+    title: 'Политика не выделена в отдельный документ',
+    why: 'Отдельной политики обработки персональных данных на сайте нет: правила, похоже, описаны внутри пользовательского соглашения или оферты. Закон требует опубликовать политику и дать к ней свободный доступ (ч. 2 ст. 18.1 152-ФЗ). Когда она спрятана в длинном соглашении, посетителю трудно её найти, а проверяющий может решить, что политики нет.',
+    fix: 'Вынесите раздел о персональных данных в отдельный документ «Политика обработки персональных данных» и поставьте прямую ссылку на него в подвале и рядом с формами.',
+    short: 'политика обработки данных не выделена в отдельный документ, а спрятана в пользовательском соглашении',
+  },
   policy_broken: {
     group: 'pd', severity: 'high',
     title: 'Ссылка на политику не работает',
@@ -850,7 +857,12 @@ function analyze(scan) {
 
   if (pdForms.length) {
     if (!cands.policy.length) {
-      add('no_policy', ['На просмотренных страницах нет ссылок на политику обработки персональных данных.'], { fields: fieldsText });
+      // Правила обработки данных могут быть описаны внутри оферты: тогда пишем мягче и точнее.
+      if (says(['offer'], 'pdSection')) {
+        add('policy_inside_offer', ['Ссылки на отдельную политику нет, а в пользовательском соглашении (оферте) есть раздел о персональных данных.']);
+      } else {
+        add('no_policy', ['На просмотренных страницах нет ссылок на политику обработки персональных данных.'], { fields: fieldsText });
+      }
     } else if (!policyOk) {
       const details = cands.policy.slice(0, 3).map((c) => {
         const d = docs[c.key];
@@ -1056,8 +1068,9 @@ function analyze(scan) {
   const clickables = uniq(okPages.flatMap((p) => (p.data.keyboard && p.data.keyboard.examples) || []));
   const clickCount = okPages.reduce((s, p) => s + ((p.data.keyboard && p.data.keyboard.clickableNoFocus) || 0), 0);
   const kbReasons = [];
-  if (kb && kb.distinct < 3 && home.data.links.length >= 5) kbReasons.push('Мы нажимали Tab, и фокус почти не перемещался по ссылкам и кнопкам.');
-  if (kb && kb.visibleFocused >= 5 && kb.noOutline / kb.visibleFocused >= 0.8) kbReasons.push('Когда идёшь по сайту клавишей Tab, не видно, где сейчас фокус: рамка выделения убрана.');
+  // Если фокус ушёл во встроенное окно, о перемещении по странице судить нельзя.
+  if (kb && kb.distinct < 3 && !kb.enteredFrame && home.data.links.length >= 5) kbReasons.push('Мы нажимали Tab, и фокус почти не перемещался по ссылкам и кнопкам.');
+  if (kb && kb.visibleFocused >= 5 && kb.noOutline / kb.visibleFocused >= 0.8) kbReasons.push('Похоже, при переходе клавишей Tab не видно, где сейчас фокус: стандартная рамка выделения отключена.');
   if (clickCount >= 3) {
     kbReasons.push(clickables.length
       ? `Некоторые кнопки (${clickables.slice(0, 3).map(quote).join(', ')}) сделаны так, что до них нельзя дойти клавишей Tab.`
@@ -1101,7 +1114,7 @@ function analyze(scan) {
   result.checklist = [
     // Персональные данные
     { group: 'pd', item: 'Сайт работает по HTTPS', status: https ? 'ok' : 'fail' },
-    { group: 'pd', item: 'Есть политика обработки персональных данных', status: !pdForms.length && !cands.policy.length ? 'na' : policyOk ? (has('policy_not_near_forms') ? 'warn' : 'ok') : 'fail' },
+    { group: 'pd', item: 'Есть политика обработки персональных данных', status: !pdForms.length && !cands.policy.length ? 'na' : policyOk ? (has('policy_not_near_forms') ? 'warn' : 'ok') : has('policy_inside_offer') ? 'warn' : 'fail' },
     { group: 'pd', item: 'В политике написано, как отозвать согласие и удалить данные', status: pdForms.length ? st(state.deletion, 'na') : 'na' },
     { group: 'pd', item: 'В формах есть галочка согласия', status: consentStatus },
     { group: 'pd', item: 'Есть отдельный текст согласия', status: !pdForms.length ? 'na' : consentDocOk ? 'ok' : 'fail' },

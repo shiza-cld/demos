@@ -10,7 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 const { extractPageData, readTimers } = require('./lib/extract');
-const { analyze, docCandidates, linkKind, stripWww, safeUrl, hostOf } = require('./lib/analyze');
+const { analyze, docCandidates, linkKind, consentType, stripWww, safeUrl, hostOf } = require('./lib/analyze');
 const { renderReport, renderLetter, renderIndex, renderCsv, plural } = require('./lib/report');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
@@ -142,7 +142,7 @@ async function visit(page, url) {
 
   let data;
   try {
-    data = await page.mainFrame().evaluate(extractPageData);
+    data = await extractSettled(page.mainFrame(), page);
   } catch (e) {
     return { url: page.url(), status, error: 'не удалось прочитать страницу: ' + shortErr(e) };
   }
@@ -151,7 +151,8 @@ async function visit(page, url) {
     if (fr === page.mainFrame()) continue;
     if (/youtube|vimeo|google\.com\/maps|yandex\.\w+\/map-widget|vk\.com\/video/i.test(fr.url())) continue;
     try {
-      const sub = await fr.evaluate(extractPageData);
+      await fr.waitForLoadState('load', { timeout: 4000 }).catch(() => {});
+      const sub = await extractSettled(fr, page);
       if (!sub.forms.some((f) => f.pdCount)) continue;
       // Слова о согласии могут стоять не в самом виджете, а рядом с ним на странице: читаем блок вокруг окна.
       const around = await frameSurroundings(fr);
@@ -165,6 +166,18 @@ async function visit(page, url) {
     } catch (e) { /* фрейм недоступен, пропускаем */ }
   }
   return { url: page.url(), status, data };
+}
+
+// Галочки согласия в формах иногда дорисовываются скриптом через секунду-другую после загрузки.
+// Поэтому вывод «в форме нет согласия» перепроверяем: ждём и смотрим ещё раз, до двух повторов.
+const hasBareForm = (d) => d.forms.some((f) => f.pdCount && consentType(f) === 'none');
+async function extractSettled(frame, page) {
+  let data = await frame.evaluate(extractPageData);
+  for (let i = 0; i < 2 && hasBareForm(data); i++) {
+    await page.waitForTimeout(1500);
+    data = await frame.evaluate(extractPageData);
+  }
+  return data;
 }
 
 // Текст блока, в который вставлено встроенное окно (виджет формы), без стилей и скриптов.
@@ -257,14 +270,22 @@ const MENTIONS = {
   autorenew: /(автопродл|автоматическ\S*\s+(продл|списан)|рекуррент|отключить\s+(подписку|автопл|автопрод)|отменить\s+подписку)/i,
 };
 const unknownMentions = () => Object.fromEntries(Object.keys(MENTIONS).map((k) => [k, null]));
+const CLOUD_DISK_RE = /^(disk\.yandex\.[a-z.]+|yadi\.sk|docs\.google\.com|drive\.google\.com|cloud\.mail\.ru|(www\.)?dropbox\.com)$/i;
 
 // Скачиваем документ и проверяем, что он открывается и похож на настоящий.
 // Если это раздел со списком документов («Правовая информация»), переходим по ссылке на саму политику.
 async function checkDoc(context, href, kind, depth = 0) {
+  // Документ есть, но прочитать его не получилось: о содержании ничего не утверждаем.
+  const unreadable = (extra) => ({ ok: true, unreadable: true, reqText: [], mentions: unknownMentions(), ...extra });
   try {
+    // Файлы на облачных дисках роботу обычно не отдаются: считаем, что документ есть.
+    if (CLOUD_DISK_RE.test(new URL(href).hostname)) return unreadable({});
     const r = await context.request.get(href, { timeout: 15000, maxRedirects: 5, failOnStatusCode: false });
     const status = r.status();
-    if (status >= 400) return { ok: false, status };
+    // Ссылка действительно битая.
+    if (status === 404 || status === 410) return { ok: false, status };
+    // Защита от роботов или временный сбой сервера: это не значит, что документа нет.
+    if (status >= 400) return unreadable({ status });
     const ct = (r.headers()['content-type'] || '').toLowerCase();
     // PDF и Word не читаем: документ есть, но что в нём написано, неизвестно.
     if (/pdf|msword|officedocument/.test(ct) || /\.(pdf|docx?)$/i.test(new URL(r.url()).pathname)) {
@@ -304,7 +325,10 @@ async function checkDoc(context, href, kind, depth = 0) {
     }
     return result;
   } catch (e) {
-    return { ok: false, error: shortErr(e) };
+    const msg = shortErr(e);
+    // Домена не существует - ссылка битая. Всё остальное (обрыв, долгий ответ, скачивание файла) - просто не прочитали.
+    if (/ENOTFOUND|ERR_NAME_NOT_RESOLVED|Invalid URL/i.test(msg)) return { ok: false, error: msg };
+    return unreadable({ error: msg });
   }
 }
 
@@ -339,6 +363,8 @@ function readDocHtml(html, status, kind = 'policy') {
   const [denseRe, denseMin] = DENSE[kind] || DENSE.policy;
   const full = text.length >= 2500 && (text.match(denseRe) || []).length >= denseMin && !FILE_LINK_RE.test(html);
   const mentions = Object.fromEntries(Object.entries(MENTIONS).map(([k, r]) => [k, r.test(text) ? true : full ? false : null]));
+  // Правила обработки данных бывают спрятаны внутри оферты или пользовательского соглашения.
+  if (kind === 'offer') mentions.pdSection = (text.match(/персональн/gi) || []).length >= 5 ? true : null;
   return { ok, status, reqText, mentions };
 }
 
@@ -399,24 +425,29 @@ async function keyboardCheck(page) {
       window.scrollTo(0, 0);
       if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     });
-    const seen = [];
+    // Каждый элемент учитываем один раз. Встроенные окна пропускаем: фокус уходит внутрь окна,
+    // и снаружи рамки не видно, даже если с сайтом всё в порядке.
+    const seen = new Map();
     for (let i = 0; i < 15; i++) {
       await page.keyboard.press('Tab');
       const info = await page.evaluate(() => {
         const el = document.activeElement;
         if (!el || el === document.body || el === document.documentElement) return null;
+        if (el.tagName === 'IFRAME' || el.tagName === 'FRAME') return { key: 'frame', frame: true };
         const r = el.getBoundingClientRect();
         const cs = getComputedStyle(el);
         const visible = r.width > 1 && r.height > 1 && cs.visibility !== 'hidden' && Number(cs.opacity) > 0;
         const outline = (cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0) || (cs.boxShadow && cs.boxShadow !== 'none');
         return { key: el.tagName + '|' + (el.getAttribute('href') || '') + '|' + (el.innerText || '').trim().slice(0, 30), visible, outline };
       });
-      if (info) seen.push(info);
+      if (info && !seen.has(info.key)) seen.set(info.key, info);
     }
-    const visible = seen.filter((x) => x.visible);
+    const all = [...seen.values()];
+    const visible = all.filter((x) => !x.frame && x.visible);
     return {
-      focused: seen.length,
-      distinct: new Set(seen.map((x) => x.key)).size,
+      focused: all.length,
+      distinct: all.length,
+      enteredFrame: all.some((x) => x.frame),
       visibleFocused: visible.length,
       noOutline: visible.filter((x) => !x.outline).length,
     };

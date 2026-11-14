@@ -1,0 +1,11 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Виджет</title></head><body>
+<form id="f"><input name="name" placeholder="Имя"><input type="email" name="email" placeholder="E-mail"><button>Записаться</button></form>
+<script>
+  // Так ведут себя некоторые виджеты: галочку согласия дорисовывает скрипт уже после загрузки формы.
+  setTimeout(function () {
+    var label = document.createElement('label');
+    label.innerHTML = '<input type="checkbox" required> Даю <a href="consent.html">согласие на обработку персональных данных</a>';
+    document.getElementById('f').appendChild(label);
+  }, 1800);
+</script>
+</body></html>
