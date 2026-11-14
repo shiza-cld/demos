@@ -10,7 +10,7 @@ const { chromium } = require('playwright');
 const os = require('os');
 const { scanSite, writeOutputs, loadPrevious } = require('../scan');
 const { innValid, ogrnValid } = require('../lib/inn');
-const { linkKind } = require('../lib/analyze');
+const { linkKind, PROMISE_RE, isLikelyClaim } = require('../lib/analyze');
 
 const ROOT = path.join(__dirname, 'fixtures');
 // Для проверки платных шрифтов тестовый сервер отдаёт системный шрифт под именем Gilroy.
@@ -106,6 +106,20 @@ function serve() {
     check(kind('https://disk.yandex.ru/i/abc', 'Договор-оферта') === 'offer', 'оферта на Яндекс Диске - документ сайта');
     check(kind('https://school.getcourse.ru/oferta', 'Оферта') === 'offer', 'оферта на поддомене GetCourse - документ школы');
     check(kind('https://getcourse.ru/oferta', 'Оферта') === null, 'оферта самой платформы GetCourse - не документ школы');
+    if (failed === before) console.log('  ✓');
+  }
+
+  console.log('громкие обещания:');
+  {
+    const before = failed;
+    const claim = (t) => new RegExp(PROMISE_RE.source, 'i').test(t) && isLikelyClaim(t);
+    for (const t of ['Гарантируем результат!', 'Лучшая онлайн-школа в России', 'Школа №1 в России', 'Доход от 100 000 ₽ уже через месяц', 'Самая эффективная методика обучения']) {
+      check(claim(t), `это обещание должно находиться: «${t}»`);
+    }
+    for (const t of ['Пока лучший курс в моей жизни', 'Моя цель - выйти на доход от 100 000 рублей', '№1 по версии РБК', 'Школа №1 в рейтинге школ',
+      'Для тех, кто хочет быть №1 в кондитерском деле', 'В редакции № 1 от 10.01.2025', 'Академия коучинга и психологии №1 реализует программы', 'Самый популярный курс']) {
+      check(!claim(t), `это не обещание школы: «${t}»`);
+    }
     if (failed === before) console.log('  ✓');
   }
 
