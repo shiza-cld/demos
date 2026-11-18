@@ -2,14 +2,26 @@
 import os, re, subprocess
 from concurrent.futures import ThreadPoolExecutor
 
-CHANNEL = "kaicenat"
-GTA6 = re.compile(r"GTA\s*(6|VI)\b|GRAND THEFT AUTO\s*(6|VI)\b", re.I)
+GTA6 = re.compile(r"GTA\s*(6|VII?)\b|GRAND THEFT AUTO\s*(6|VI)\b", re.I)
+AUDIO_FMT = "Audio_Only/bestaudio/160p/160p30/worst"
+VIDEO_FMT = "1080p60/1080p/1080p30/best[height<=1080]/best"
 
-def stream_url(vod, fmt):
-    r = subprocess.run(["yt-dlp", "-f", fmt, "-g", f"https://www.twitch.tv/videos/{vod}"],
-                       capture_output=True, text=True)
+# A source id names one VOD: "twitch:<vod_id>" or "kick:<channel>:<vod_uuid>".
+def vod_page(src):
+    parts = src.split(":")
+    if parts[0] == "twitch": return f"https://www.twitch.tv/videos/{parts[1]}"
+    if parts[0] == "kick": return f"https://kick.com/{parts[1]}/videos/{parts[2]}"
+    raise ValueError(f"unknown source {src}")
+
+def videos_page(platform, channel):
+    if platform == "twitch": return f"https://www.twitch.tv/{channel}/videos?filter=archives&sort=time"
+    if platform == "kick": return f"https://kick.com/{channel}/videos"
+    raise ValueError(platform)
+
+def stream_url(src, fmt):
+    r = subprocess.run(["yt-dlp", "-f", fmt, "-g", vod_page(src)], capture_output=True, text=True)
     url = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
-    if not url: raise RuntimeError(f"no stream url for {vod} ({fmt}): {r.stderr[-500:]}")
+    if not url: raise RuntimeError(f"no stream url for {src} ({fmt}): {r.stderr[-500:]}")
     return url
 
 def playlist(url):

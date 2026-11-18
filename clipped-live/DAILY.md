@@ -1,44 +1,57 @@
-# Daily run: new GTA 6 Shorts → Google Drive
+# Daily run: 6–8 new GTA 6 Shorts from several streamers
 
-Channel: **Clipped Live** (fan clip channel). Source: Kai Cenat's Twitch VODs, **GTA 6 streams only**.
-Goal of each run: 4–6 new captioned vertical Shorts + their YouTube metadata, saved to Google Drive.
+Channel: **Clipped Live** (fan clip channel, English captions). **GTA 6 gameplay only.**
+The owner reads Russian: write the final summary in Russian; titles/descriptions/tags in English.
 
-## Google Drive
-- Folder `Clipped Live`: `1kDe_huLRN615i9nuLtzt4FBuGDQpbb_1`
-  - `ready/` `1D2ecbRYKxVL-VD8GV871WWDkRdG6xHyj`: new clips waiting to be posted (mp4 + srt) and one upload-list Doc per run
-  - `uploaded/` `1Y8A0cQBnZbU9GjDJY3-PGPK-nnjZBXtq`: clips already posted (moved there after upload)
-  - `state.json` (in the `Clipped Live` folder): `{"vods": {"<vod_id>": {"processed_until": <sec>, "final": bool}}, "clips": ["<file name>", ...]}`
-- Uploads from Claude are limited to 10 MB per file; `make_clip.py` already encodes under 9.5 MB. Upload with
-  `create_file` using `base64Content: "sha256:<hash>:<absolute path>"`, `contentMimeType: video/mp4`,
-  `disableConversionToGoogleType: true`, `parentId: <ready folder>`.
+## Who to clip (`streamers.json`)
+- **Tier 1 — paid clipping campaigns (Reach / Whop Content Rewards):** Lacy, JasonTheWeen, and CORE clips
+  (2+ of Lacy / JasonTheWeen / Stable Ronaldo / Marlon / Silky / Adapt on screen). Make **4–5** of the day's clips here.
+- **Tier 2:** Kai Cenat, xQc, Jynxzi, Agent00, N3on. **Tier 3:** Lirik, Asmongold. Make **2–3** clips here,
+  rotating streamers day to day (`state.rotation`) so each one shows up regularly.
+- Not reachable from the cloud: IShowSpeed (YouTube blocks cloud downloads). Skip.
+
+## Google Drive (connector)
+- Folder `Clipped Live`: `1kDe_huLRN615i9nuLtzt4FBuGDQpbb_1`; sub-folder `ready/`: `1D2ecbRYKxVL-VD8GV871WWDkRdG6xHyj`
+- `state.json` in `Clipped Live`:
+  `{"sources": {"<src>": {"processed_until": sec}}, "clips": [{"name", "src", "start", "end"}], "rotation": n}`
+- Videos do NOT go to Drive (connector uploads are capped at ~3 MB). Only text goes there: `state.json`
+  and one Google Doc per run.
 
 ## Steps
-1. `bash clipped-live/setup.sh`
-2. Read `state.json` from Drive (search `title = 'state.json'` with parent `1kDe_huLRN615i9nuLtzt4FBuGDQpbb_1`).
-3. `python3 -I clipped-live/find_vods.py 15` → keep `gta6: true` VODs. For each, unprocessed range = `processed_until` → `duration`.
-   Prefer the newest material. Process at most ~8 h of audio per run. Ranges from VODs older than 3 days that
-   are still unprocessed: skip them (set `processed_until` to the duration). If nothing is new, update nothing
-   and finish with a one-line summary.
-4. For each range: `python3 -I clipped-live/prepare_vod.py <vod> <from> <hours> <workdir>/<vod>`. It prints
-   `processed_until=`. Read `candidates.md` (and `transcript.tsv` around anything promising).
-5. Pick the 4–6 best moments (Shorts that work on their own): funny reactions, rage, NPC beef, story shocks,
-   hype milestones. 20–60 s each, start 2–5 s before the setup, end right after the punchline.
-   Skip: sponsor reads, ad breaks, pause menus/loading screens, dead air, long stretches of slurs,
-   sexual content, anything about real private people. Do not repeat a moment already in `state.clips`.
-6. For each: `python3 -I clipped-live/make_clip.py <vod> <start> <end> <YYYY-MM-DD>_<nn>_<slug> <outdir>`.
-   Open the `.jpg` preview: webcam on top and gameplay below (or full frame on a blur if no webcam was found).
-   If the layout is wrong or the clip is mostly a menu, drop it or pick another.
-7. Upload each `.mp4` and `.en.srt` to `ready/`.
-8. Create a Google Doc in `ready/` titled `<YYYY-MM-DD> — upload list` with, per clip: file name, stream time,
-   **Title** (≤ 70 chars, starts with "Kai Cenat", one emoji), **Description** (1–2 sentences + footer below),
-   **Tags** (comma-separated, ~10), and a suggested publish slot (one per day, 20:00–23:00 Moscow time).
-   Description footer:
-   ```
-   🎮 Kai Cenat plays GTA 6
-   📺 Full stream: twitch.tv/kaicenat
-   All credit to @KaiCenat
-   #kaicenat #gta6 #shorts #gta #funny #twitch #streamer
-   ```
-9. Update `state.json` (new `processed_until` per VOD, `final: true` once the VOD is no longer live, add clip names).
-10. Finish with a short summary in Russian: how many clips, their titles, and the Drive folder link
-    https://drive.google.com/drive/folders/1D2ecbRYKxVL-VD8GV871WWDkRdG6xHyj
+1. `bash clipped-live/setup.sh` (from the repo root).
+2. Read `state.json` from Drive (`title = 'state.json'`, parent `1kDe_huLRN615i9nuLtzt4FBuGDQpbb_1`).
+3. `python3 -I clipped-live/find_vods.py 5 > vods.json` — GTA-6-titled VODs for every streamer.
+4. Pick sources: all tier-1 VODs with new material, plus 2 tier-2/3 streamers by rotation.
+   For each, take only the **newest** unprocessed stretch:
+   `from = max(processed_until, duration − H·3600)` with H = 2.5 (tier 1) or 2 (tier 2/3).
+   Skip VODs older than 3 days. Total audio per run ≤ ~10 h.
+5. Before transcribing, confirm it is really GTA 6 gameplay (titles like "GTA 6 SOON" are not):
+   `python3 -I clipped-live/peek.py <src> peek_<name>.jpg 6 <from> <to>` and look at the image.
+6. `python3 -I clipped-live/prepare_vod.py <src> <from> <H> work/<name>` → read `work/<name>/candidates.md`
+   (and `transcript.tsv` around promising spots).
+7. Choose the moments. Good: funny reactions, rage, NPC beef, story shocks, wild chases, hype milestones,
+   streamers interacting. 20–55 s, start 2–4 s before the setup, end right after the punchline.
+   For campaign clips the streamer must be the main focus (webcam visible, he is the one reacting) and the
+   clip must not make him look bad. Skip: sponsor reads, gambling, ad breaks, menus/loading screens, dead air,
+   long runs of slurs, sexual content, anything about private people. Never repeat a moment in `state.clips`.
+8. Build each: `python3 -I clipped-live/make_clip.py <src> <start> <end> <YYYY-MM-DD>_<nn>_<streamer>_<slug> out`
+   Look at every `out/*.jpg`: webcam on top and gameplay below (or full frame on a blur). If the webcam crop
+   is wrong or the clip is mostly a menu, rebuild with other bounds or drop it.
+9. Send all finished `out/*.mp4` and `out/*.en.srt` to the user with SendUserFile (status `proactive`).
+10. Create a Google Doc in `ready/` titled `<YYYY-MM-DD> — Clipped Live upload list`. Per clip:
+    file name · streamer · source + stream time · **Title** (≤ 70 chars, starts with the streamer's name,
+    1 emoji) · **Description** (1–2 sentences + footer) · **Tags** (~10) · **Campaign** (which pool, if any) ·
+    publish slot. Footer:
+    ```
+    🎮 <Streamer> plays GTA 6
+    📺 Full stream: <twitch.tv/... or kick.com/...>
+    All credit to @<Streamer>
+    #<streamer> #gta6 #shorts #gta #funny #twitch #streamer
+    ```
+    Campaign clips additionally need the streamer's name in the title and the campaign hashtags
+    (`#Lacy`, `#JasonTheWeen`, `#CORE` + one per CORE member shown). They must be **published right away, not
+    scheduled**, and the link submitted in Content Rewards within 30 minutes. Mark them "PUBLISH NOW + SUBMIT".
+    Non-campaign clips: one scheduled slot each, spread 2–3 h apart between 18:00 and 23:30 Moscow time.
+11. Update `state.json` on Drive (processed_until per source, new clips, rotation + 1).
+12. Final message in Russian: number of clips, a line per clip (streamer — title — campaign or not),
+    and the Doc link.

@@ -1,17 +1,17 @@
 """Download audio of a VOD range, transcribe it, and write candidate highlight windows for review.
-usage: python3 -I prepare_vod.py <vod_id> <from_sec> <max_hours> <out_dir>
+usage: python3 -I prepare_vod.py <src> <from_sec> <max_hours> <out_dir>   (src: twitch:<id> or kick:<channel>:<uuid>)
 writes: transcript.tsv (abs_sec<TAB>text), candidates.md, and prints processed_until=<sec>"""
 import os as _os, sys as _sys; _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 import sys, os, json, subprocess, numpy as np
-from common import stream_url, playlist, fetch, concat
+from common import stream_url, playlist, fetch, concat, AUDIO_FMT
 
-vod, t_from, max_h, out = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4]
+src, t_from, max_h, out = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4]
 os.makedirs(out, exist_ok=True)
-segs = [s for s in playlist(stream_url(vod, "Audio_Only/bestaudio/worst")) if s[0] >= t_from - 0.01]
+segs = [s for s in playlist(stream_url(src, AUDIO_FMT)) if s[0] >= t_from - 0.01]
 segs = [s for s in segs if s[0] < t_from + max_h * 3600]
 if not segs: print("processed_until=%d" % t_from); print("NOTHING_NEW"); sys.exit(0)
 start, until = segs[0][0], segs[-1][0] + segs[-1][1]
-audio = concat(fetch(segs, f"{out}/aseg"), f"{out}/audio.ts", ["-c", "copy"])
+audio = concat(fetch(segs, f"{out}/aseg"), f"{out}/audio.m4a", ["-vn", "-c:a", "aac", "-b:a", "96k"])
 
 pcm = np.frombuffer(subprocess.run(["ffmpeg", "-v", "error", "-i", audio, "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
                                    capture_output=True).stdout, np.float32)
@@ -43,7 +43,7 @@ for i in np.argsort(-score):
     if len(picked) >= k: break
 def hms(t): t = int(t); return f"{t//3600}:{t%3600//60:02d}:{t%60:02d}"
 with open(f"{out}/candidates.md", "w") as f:
-    f.write(f"# VOD {vod} candidates ({hms(start)}–{hms(until)})\n\n")
+    f.write(f"# {src} candidates ({hms(start)}–{hms(until)})\n\n")
     for i in sorted(picked):
         c = start + i
         f.write(f"## {hms(c)} (sec {c:.0f}, score {score[i]:.1f})\n")

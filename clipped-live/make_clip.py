@@ -1,6 +1,6 @@
 """Build one vertical YouTube Short (1080x1920) with burned-in English captions from a Twitch VOD range.
 
-usage: python3 -I make_clip.py <vod_id> <start_sec> <end_sec> <name> <out_dir>
+usage: python3 -I make_clip.py <src> <start_sec> <end_sec> <name> <out_dir>   (src: twitch:<id> or kick:<channel>:<uuid>)
 
 Outputs in <out_dir>:
   <name>.mp4      HEVC, 30 fps, sized to fit under 10 MB (Google Drive upload limit from Claude)
@@ -12,17 +12,17 @@ import os as _os, sys as _sys; _sys.path.insert(0, _os.path.dirname(_os.path.abs
 import sys, os, re, json, subprocess
 import numpy as np
 from faster_whisper import WhisperModel
-from common import stream_url, playlist, fetch, concat
+from common import stream_url, playlist, fetch, concat, VIDEO_FMT
 import camdetect
 
-vod, t0, t1, name, out_dir = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4], sys.argv[5]
+src, t0, t1, name, out_dir = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]), sys.argv[4], sys.argv[5]
 MAX_BYTES = 9.0 * 1024 * 1024          # stay safely under the 10 MB Drive limit
 work = os.path.join(out_dir, "_work", name); os.makedirs(work, exist_ok=True)
 
 # 1) fetch the HLS segments covering [t0, t1] and cut the exact range
-segs = [s for s in playlist(stream_url(vod, "1080p60/1080p/1080p30/best[height<=1080]/best"))
+segs = [s for s in playlist(stream_url(src, VIDEO_FMT))
         if s[0] + s[1] > t0 and s[0] < t1]
-if not segs: sys.exit(f"range {t0}-{t1} not in VOD {vod}")
+if not segs: sys.exit(f"range {t0}-{t1} not in {src}")
 raw = os.path.join(work, "raw.mp4")
 concat(fetch(segs, os.path.join(work, "seg")), raw,
        ["-ss", f"{t0 - segs[0][0]:.3f}", "-t", f"{t1 - t0:.3f}", "-c:v", "libx264", "-preset", "veryfast",
@@ -71,9 +71,17 @@ if cur: groups.append(cur)
 cam = camdetect.detect(raw)
 if cam:
     x, y, w, h = cam
-    fc = (f"[0:v]split[a][b];[a]crop={w}:{h}:{x}:{y},scale=1080:608:flags=lanczos,setsar=1[cam];"
-          "[b]crop=888:1080:516:0,scale=1080:1312:flags=lanczos,setsar=1[game];[cam][game]vstack[base]")
-    cap_y = 700
+    cam_h = int(min(810, max(540, round(1080 * h / w)))) // 2 * 2      # webcam strip height in the Short
+    target = 1080 / cam_h                                               # crop the webcam box to that aspect
+    if w / h > target: nw, nh = int(h * target), h
+    else: nw, nh = w, int(w / target)
+    x, y, w, h = x + (w - nw) // 2, y + (h - nh) // 2, nw // 2 * 2, nh // 2 * 2
+    game_h = 1920 - cam_h
+    cw = int(round(1080 * 1080 / game_h)) // 2 * 2                     # centre slice of the gameplay
+    fc = (f"[0:v]split[a][b];[a]crop={w}:{h}:{x}:{y},scale=1080:{cam_h}:flags=lanczos,setsar=1[cam];"
+          f"[b]crop={cw}:1080:{(1920 - cw) // 2}:0,scale=1080:{game_h}:flags=lanczos,setsar=1[game];"
+          "[cam][game]vstack[base]")
+    cap_y = cam_h + 92
 else:
     fc = ("[0:v]split[a][b];[a]scale=-2:1920,crop=1080:1920,boxblur=30:3,eq=brightness=-0.15[bg];"
           "[b]scale=1080:-2[fg];[bg][fg]overlay=0:(H-h)/2[base]")
