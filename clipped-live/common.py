@@ -24,6 +24,15 @@ def stream_url(src, fmt):
     if not url: raise RuntimeError(f"no stream url for {src} ({fmt}): {r.stderr[-500:]}")
     return url
 
+def vod_start(url):
+    """UTC epoch of the first segment of an HLS playlist (from #EXT-X-PROGRAM-DATE-TIME), or None."""
+    import datetime
+    body = subprocess.run(["curl", "-sS", "--retry", "5", "--retry-all-errors", "-r", "0-4000", url],
+                          capture_output=True, text=True).stdout
+    m = re.search(r"#EXT-X-PROGRAM-DATE-TIME:(\S+)", body)
+    if not m: return None
+    return datetime.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).timestamp()
+
 def playlist(url):
     """[(start_sec, dur_sec, segment_url)] for an HLS media playlist (handles '-muted.ts' names)."""
     body = subprocess.run(["curl", "-sS", "--retry", "8", "--retry-all-errors", url],
