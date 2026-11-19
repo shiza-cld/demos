@@ -15,4 +15,5 @@ Turns Twitch / Kick VODs of the streamers in `streamers.json` into vertical YouT
 
 Source ids: `twitch:<vod_id>` or `kick:<channel>:<vod_uuid>`.
 
-`DAILY.md` is the checklist the scheduled daily run follows.
+`DAILY.md` is the checklist for choosing streamers and moments (cloud daily run).
+`LOCAL.md` is the checklist for running everything on the owner's Windows PC, including the YouTube upload.

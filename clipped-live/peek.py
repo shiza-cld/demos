@@ -11,6 +11,9 @@ segs = playlist(stream_url(src, "360p/360p30/480p/480p30/worst"))
 a = float(sys.argv[4]) if len(sys.argv) > 4 else 0
 b = float(sys.argv[5]) if len(sys.argv) > 5 else segs[-1][0] + segs[-1][1]
 tmp = tempfile.mkdtemp()
+FONT = next((f for f in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "C:/Windows/Fonts/arialbd.ttf",
+                         "/Library/Fonts/Arial Bold.ttf") if os.path.exists(f)), None)
+font_opt = ("fontfile=" + FONT.replace(":", "\\:") + ":") if FONT else ""
 tiles = []
 for k in range(n):
     t = a + (b - a) * (k + 0.5) / n
@@ -19,7 +22,7 @@ for k in range(n):
     subprocess.run(["curl", "-sS", "--retry", "5", "--retry-all-errors", "-o", ts, s[2]], check=True)
     h, m = int(s[0] // 3600), int(s[0] % 3600 // 60)
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", "2", "-i", ts, "-frames:v", "1", "-vf",
-                    f"scale=480:270,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:"
+                    f"scale=480:270,drawtext={font_opt}"
                     f"text='{h}h{m:02d}':x=6:y=6:fontsize=22:fontcolor=yellow:box=1:boxcolor=black", jpg], check=True)
     tiles.append(jpg)
 cols = 3

@@ -25,7 +25,7 @@ from faster_whisper import WhisperModel
 m = WhisperModel("base.en", device="cpu", compute_type="int8", cpu_threads=os.cpu_count())
 segs_t, _ = m.transcribe(pcm, language="en", vad_filter=True, beam_size=1)
 lines = []
-with open(f"{out}/transcript.tsv", "w") as f:
+with open(f"{out}/transcript.tsv", "w", encoding="utf-8") as f:
     for s in segs_t:
         lines.append((start + s.start, s.text.strip())); f.write(f"{start + s.start:.0f}\t{s.text.strip()}\n"); f.flush()
 
@@ -42,7 +42,7 @@ for i in np.argsort(-score):
     if all(abs(i - j) > 90 for j in picked): picked.append(int(i))
     if len(picked) >= k: break
 def hms(t): t = int(t); return f"{t//3600}:{t%3600//60:02d}:{t%60:02d}"
-with open(f"{out}/candidates.md", "w") as f:
+with open(f"{out}/candidates.md", "w", encoding="utf-8") as f:
     f.write(f"# {src} candidates ({hms(start)}–{hms(until)})\n\n")
     for i in sorted(picked):
         c = start + i

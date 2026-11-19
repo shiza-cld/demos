@@ -4,15 +4,15 @@ Per VOD: src, streamer, tier, title, start_utc, duration, and new_from/new_to = 
 recorded since now - since_hours (null when nothing new)."""
 import os as _os, sys as _sys; _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 import json, subprocess, sys, time
-from common import GTA6, videos_page, stream_url, vod_start, AUDIO_FMT
+from common import GTA6, YTDLP, videos_page, stream_url, vod_start, AUDIO_FMT
 
 since_h = float(sys.argv[1]) if len(sys.argv) > 1 else 24
 n = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 now = time.time(); cutoff = now - since_h * 3600
-streamers = json.load(open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "streamers.json")))
+streamers = json.load(open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "streamers.json"), encoding="utf-8"))
 out = []
 for s in streamers:
-    r = subprocess.run(["yt-dlp", "--flat-playlist", "--playlist-end", str(n), "--print",
+    r = subprocess.run([*YTDLP, "--flat-playlist", "--playlist-end", str(n), "--print",
                         "%(id)s\t%(title)s\t%(duration)s", videos_page(s["platform"], s["channel"])],
                        capture_output=True, text=True, timeout=180)
     for line in r.stdout.splitlines():
@@ -28,4 +28,4 @@ for s in streamers:
         out.append({"streamer": s["name"], "tier": s["tier"], "src": src, "title": title,
                     "start_utc": time.strftime("%Y-%m-%d %H:%M", time.gmtime(start)) if start else None,
                     "duration": dur, "new_from": new_from, "new_to": new_to})
-print(json.dumps(out, ensure_ascii=False, indent=1))
+print(json.dumps(out, ensure_ascii=True, indent=1))

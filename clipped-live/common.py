@@ -1,7 +1,8 @@
 """Shared helpers: Twitch VOD playlists and segment downloads."""
-import os, re, subprocess
+import os, re, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
+YTDLP = [sys.executable, "-m", "yt_dlp"]   # works on Windows even if yt-dlp.exe is not on PATH
 GTA6 = re.compile(r"GTA\s*(6|VII?)\b|GRAND THEFT AUTO\s*(6|VI)\b", re.I)
 AUDIO_FMT = "Audio_Only/bestaudio/160p/160p30/worst"
 VIDEO_FMT = "1080p60/1080p/1080p30/best[height<=1080]/best"
@@ -19,7 +20,7 @@ def videos_page(platform, channel):
     raise ValueError(platform)
 
 def stream_url(src, fmt):
-    r = subprocess.run(["yt-dlp", "-f", fmt, "-g", vod_page(src)], capture_output=True, text=True)
+    r = subprocess.run([*YTDLP, "-f", fmt, "-g", vod_page(src)], capture_output=True, text=True)
     url = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
     if not url: raise RuntimeError(f"no stream url for {src} ({fmt}): {r.stderr[-500:]}")
     return url
@@ -59,6 +60,6 @@ def fetch(segs, folder, workers=16):
 
 def concat(paths, out, extra=()):
     lst = out + ".txt"
-    with open(lst, "w") as f: f.writelines(f"file '{p}'\n" for p in paths)
+    with open(lst, "w", encoding="utf-8") as f: f.writelines("file '" + p.replace(chr(92), "/") + "'\n" for p in paths)
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "concat", "-safe", "0", "-i", lst, *extra, out], check=True)
     return out
