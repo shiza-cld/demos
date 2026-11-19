@@ -5,7 +5,7 @@ logged in to the YouTube channel **Clipped Live**. The owner reads Russian: talk
 titles, descriptions and tags are in English.
 
 ## 0. One-time setup (skip what is already installed)
-Work folder: the folder this session was opened in (the owner's `мм`). Layout inside it:
+Work folder: the folder this session was opened in (`YTshorts`). Layout inside it:
 ```
 мм/
   demos/                 ← this repo (code lives in demos/clipped-live)
@@ -24,7 +24,7 @@ Work folder: the folder this session was opened in (the owner's `мм`). Layout 
    `{"sources": {}, "clips": [], "uploaded": [], "rotation": 0}` and copy the clip list from
    `demos/clipped-live/done.json` into `"clips"` (those moments are already on the channel).
 
-Run scripts as `python -I demos/clipped-live/<script>.py ...` from the `мм` folder.
+Run scripts as `python -I demos/clipped-live/<script>.py ...` from the `YTshorts` folder.
 
 ## 1. Daily run
 Follow `DAILY.md` for **choosing streamers and moments** (tiers, paid campaigns, what makes a good Short,
