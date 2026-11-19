@@ -7,7 +7,7 @@ titles, descriptions and tags are in English.
 ## 0. One-time setup (skip what is already installed)
 Work folder: the folder this session was opened in (`YTshorts`). Layout inside it:
 ```
-мм/
+YTshorts/
   demos/                 ← this repo (code lives in demos/clipped-live)
   clips/YYYY-MM-DD/      ← finished Shorts (.mp4, .en.srt, .jpg preview, upload_list.md)
   work/                  ← temporary downloads (delete after each run)
